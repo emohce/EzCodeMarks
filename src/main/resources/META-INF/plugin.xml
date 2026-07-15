@@ -13,13 +13,15 @@
     <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
     <description><![CDATA[
-        CodeMark provides structured bookmarks and guided navigation.
+        EzCodeMarks provides structured bookmarks, guided code navigation, and assisted Git commit messages.
     ]]></description>
 
     <!-- Product and plugin compatibility requirements.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
     <idea-version since-build="253.*" />
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
+    <depends>Git4Idea</depends>
 
     <!-- Extensions defined by the plugin.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
@@ -41,6 +43,31 @@
             instance="emohce.presentation.settings.EzCodeMarksSettingsConfigurable"
             id="emohce.settings"
             displayName="EzCodeMarks"/>
+        <applicationConfigurable
+            parentId="emohce.settings"
+            instance="emohce.presentation.commitmessage.settings.CommitMessageSettingsConfigurable"
+            id="emohce.settings.commitMessage"
+            bundle="messages.CommitMessageBundle"
+            key="settings.commitMessage.title"/>
+        <applicationConfigurable
+            parentId="emohce.settings.commitMessage"
+            instance="emohce.presentation.commitmessage.settings.CommitTemplatesConfigurable"
+            id="emohce.settings.commitMessage.templates"
+            bundle="messages.CommitMessageBundle"
+            key="settings.templates.title"/>
+        <applicationConfigurable
+            parentId="emohce.settings.commitMessage"
+            instance="emohce.presentation.commitmessage.settings.CommitProvidersConfigurable"
+            id="emohce.settings.commitMessage.providers"
+            bundle="messages.CommitMessageBundle"
+            key="settings.providers.title"/>
+        <projectConfigurable
+            parentId="emohce.settings.commitMessage"
+            instance="emohce.presentation.commitmessage.settings.CommitProjectDefaultsConfigurable"
+            id="emohce.settings.commitMessage.project"
+            nonDefaultProject="true"
+            bundle="messages.CommitMessageBundle"
+            key="settings.project.title"/>
     </extensions>
 
     <actions>
@@ -131,9 +158,37 @@
             <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="CutCopyPasteGroup"/>
             <add-to-group group-id="CopyReferencePopupGroup" anchor="last"/>
             <add-to-group group-id="CopyFileReference" anchor="last"/>
-            <add-to-group group-id="SolutionExplorerPopupMenu" anchor="after" relative-to-action="CopyReferencePopupGroup"/>
             <add-to-group group-id="ChangesViewPopupMenu" anchor="last"/>
             <add-to-group group-id="Git.Stage.Tree.Menu" anchor="last"/>
         </action>
+    </actions>
+    <actions resource-bundle="messages.CommitMessageBundle">
+        <group id="EzCodeMarks.CommitMessage.Actions" popup="false">
+            <action id="EzCodeMarks.CommitMessage.Create"
+                    class="emohce.presentation.commitmessage.action.CreateCommitMessageAction"
+                    icon="AllIcons.Actions.Edit">
+                <keyboard-shortcut keymap="$default" first-keystroke="control alt shift M"/>
+                <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift M"/>
+                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift M"/>
+            </action>
+            <action id="EzCodeMarks.CommitMessage.Generate"
+                    class="emohce.presentation.commitmessage.action.GenerateCommitMessageAction"
+                    icon="AllIcons.Actions.IntentionBulb">
+                <keyboard-shortcut keymap="$default" first-keystroke="control alt shift G"/>
+                <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift G"/>
+                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift G"/>
+            </action>
+            <action id="EzCodeMarks.CommitMessage.GenerateWithContext"
+                    class="emohce.presentation.commitmessage.action.GenerateCommitMessageWithContextAction"
+                    icon="AllIcons.Actions.PreviewDetails"/>
+            <action id="EzCodeMarks.CommitMessage.Format"
+                    class="emohce.presentation.commitmessage.action.FormatCommitMessageAction"
+                    icon="AllIcons.Actions.ReformatCode"/>
+            <separator/>
+            <add-to-group group-id="Vcs.MessageActionGroup"
+                          anchor="before"
+                          relative-to-action="Vcs.ShowMessageHistory"/>
+            <add-to-group group-id="VcsActions.KeymapGroup" anchor="last"/>
+        </group>
     </actions>
 </idea-plugin>

@@ -11,7 +11,6 @@ import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import emohce.domain.model.BookmarkNode
-import java.lang.reflect.Constructor
 
 /**
  * 管理 IntelliJ 内置书签，确保 gutter 图标正常显示
@@ -214,10 +213,10 @@ class IntelliJBookmarkManager(private val project: Project) {
         file: VirtualFile,
         line: Int,
         description: String
-    ): com.intellij.ide.bookmarks.Bookmark? {
+    ): Any? {
         return try {
-            val constructor: Constructor<com.intellij.ide.bookmarks.Bookmark> = 
-                com.intellij.ide.bookmarks.Bookmark::class.java.getDeclaredConstructor(
+            val bookmarkClass = Class.forName("com.intellij.ide.bookmarks.Bookmark")
+            val constructor = bookmarkClass.getDeclaredConstructor(
                     Project::class.java,
                     VirtualFile::class.java,
                     Int::class.java,

@@ -81,11 +81,10 @@ private class AnchoredTreeSpeedSearch(
     private val anchor: () -> JComponent?
 ) : TreeSpeedSearch(tree, canExpand, java.util.function.Function { path -> nodeText(path) }) {
     fun moveToAnchor() {
-        moveSearchPopup()
+        SwingUtilities.invokeLater { repositionSearchPopup() }
     }
 
-    override fun moveSearchPopup() {
-        super.moveSearchPopup()
+    private fun repositionSearchPopup() {
         val searchField = textField ?: return
         val popup = searchField.parent ?: return
         val layeredPane = popup.parent as? JLayeredPane ?: return
