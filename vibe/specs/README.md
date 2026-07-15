@@ -11,9 +11,9 @@ Use this directory for new process docs: `spec.md`, `plan.md`, `tasks.md`, `veri
 - Current process hub: [PROJECT_STATUS.md](PROJECT_STATUS.md)
 - Task directory layout follows [CodeNote process rules](../../../CzzProj/CodeNote/AiRef/VibePractice/Vibe_Rules/process/rules.md#3-project-location).
 
-## Legacy / Related Spec Sources
+## Latest Completed Task
 
-- `vibe/specs/`: 0 Markdown files
+- Commit-message helper integration: [specification](260715/1208-commit-message-helper-integration/spec.md), [verification](260715/1208-commit-message-helper-integration/verify.md), and [handoff](260715/1208-commit-message-helper-integration/handoff.md).
 
 ## Rules
 
