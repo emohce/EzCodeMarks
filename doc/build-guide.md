@@ -1,172 +1,88 @@
-# 打包指南
+# EzCodeMarks 构建与验证指南
 
-## IntelliJ 插件打包方式
+## 环境
 
-### 方法 1：构建插件 ZIP（推荐，用于分发）
+- JDK 21
+- IntelliJ IDEA 2025.3 SDK（Gradle 自动解析）
+- Kotlin 2.4.0
+- IntelliJ Platform Gradle Plugin 2.16.0
 
-这是标准的 IntelliJ 插件分发格式，生成一个包含所有依赖的 ZIP 文件，可以直接安装到 IntelliJ IDEA。
+项目构建声明见 [build.gradle.kts](../build.gradle.kts#L23)。提交信息助手显式依赖 VCS、Git4Idea 与 IDE 随附的 Velocity 模块。
 
-**命令：**
+## 本地运行
+
+macOS / Linux：
+
 ```bash
-# Windows
-gradlew.bat buildPlugin
+./gradlew runIde
+```
 
-# Linux/Mac
+Windows：
+
+```bat
+gradlew.bat runIde
+```
+
+`runIde` 会启动安装当前插件的沙盒 IDE。提交信息助手需分别人工检查非模态 Commit ToolWindow 与传统 Commit Dialog。
+
+## 测试与完整验证
+
+按以下顺序串行执行：
+
+```bash
+./gradlew test
 ./gradlew buildPlugin
-```
-
-**输出位置：**
-- `build/distributions/CodeRemarkTour-0.0.1.zip`
-
-**安装方式：**
-1. 打开 IntelliJ IDEA
-2. Settings → Plugins → ⚙️ → Install Plugin from Disk...
-3. 选择生成的 ZIP 文件
-
-### 方法 2：构建 JAR 文件
-
-如果需要单独的 JAR 文件（不包含依赖）：
-
-**命令：**
-```bash
-# Windows
-gradlew.bat jar
-
-# Linux/Mac
-./gradlew jar
-```
-
-**输出位置：**
-- `build/libs/CodeRemarkTour-0.0.1.jar`
-
-**注意：** 这个 JAR 不包含依赖库，仅包含编译后的类文件。
-
-### 方法 3：构建包含依赖的 Fat JAR
-
-如果需要包含所有依赖的完整 JAR，需要在 `build.gradle.kts` 中添加配置：
-
-```kotlin
-tasks {
-    val fatJar = register<Jar>("fatJar") {
-        archiveClassifier.set("fat")
-        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-        from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
-        from(sourceSets.main.get().output)
-    }
-    build {
-        dependsOn(fatJar)
-    }
-}
-```
-
-然后运行：
-```bash
-gradlew.bat fatJar
-```
-
-### 方法 4：验证插件
-
-在打包前验证插件配置：
-
-```bash
-# Windows
-gradlew.bat verifyPlugin
-
-# Linux/Mac
+./gradlew verifyPluginProjectConfiguration
+./gradlew verifyPluginStructure
 ./gradlew verifyPlugin
 ```
 
-这会检查：
-- plugin.xml 配置是否正确
-- 依赖是否满足
-- 代码是否有明显错误
+各任务用途：
 
-### 构建输出目录结构
+| 任务 | 用途 |
+| --- | --- |
+| `test` | 运行 domain、data、Mock HTTP 与 IntelliJ fixture 测试 |
+| `buildPlugin` | 构建可安装 ZIP |
+| `verifyPluginProjectConfiguration` | 校验 Gradle/SDK/plugin.xml 项目配置 |
+| `verifyPluginStructure` | 校验插件包结构与描述符 |
+| `verifyPlugin` | 使用 JetBrains Plugin Verifier 检查兼容性 |
 
-```
-build/
-├── distributions/
-│   └── CodeRemarkTour-0.0.1.zip  # 插件 ZIP（可安装）
-├── libs/
-│   └── CodeRemarkTour-0.0.1.jar  # 普通 JAR
-└── searchableOptions/
-    └── ...                        # 可搜索选项（如果执行了 buildSearchableOptions）
-```
+项目已禁用 `buildSearchableOptions`。IDEA 2025.3 的测试运行时使用 JetBrains 修订版协程；构建脚本会从 `testRuntimeClasspath` 排除会遮蔽它的外部 Kotlin/Coroutine runtime。主代码与测试代码的 IntelliJ instrumentation 任务也会串行执行，避免共享 Ant instrumenter 竞态。
 
-### 常用 Gradle 任务
+## 构建插件 ZIP
 
-| 任务 | 说明 |
-|------|------|
-| `buildPlugin` | 构建插件 ZIP（推荐） |
-| `jar` | 构建普通 JAR |
-| `build` | 编译和测试 |
-| `clean` | 清理构建目录 |
-| `verifyPlugin` | 验证插件配置 |
-| `runIde` | 运行带插件的 IDE（开发用） |
-| `buildSearchableOptions` | 构建可搜索选项 |
-
-### runIde 与 Kubernetes 错误抑制
-
-执行 `runIde` 时，IDE 内置的 Kubernetes 插件可能输出 “No remote API found” 的 `IllegalStateException`。项目已在 `build.gradle.kts` 中为 `runIde` 配置了 JVM 参数以抑制此类日志：
-
-- `idea.suppress.frequent.exception.logging=true`：抑制频繁异常日志
-- `idea.kubernetes.enabled=false`：关闭 Kubernetes 相关初始化
-
-无需额外操作，直接运行 `runIde` 即可。
-
-### 发布到 JetBrains Marketplace
-
-如果需要发布到插件市场，需要：
-
-1. 在 [JetBrains Marketplace](https://plugins.jetbrains.com/) 注册账号
-2. 创建插件条目
-3. 使用 `buildPlugin` 构建 ZIP
-4. 在 Marketplace 上传 ZIP 文件
-
-### 注意事项
-
-1. **版本号**：在 `build.gradle.kts` 中修改 `version` 字段
-2. **插件 ID**：在 `plugin.xml` 中的 `<id>` 标签，一旦发布不能更改
-3. **依赖检查**：确保所有依赖都正确声明
-4. **测试**：打包前运行测试确保功能正常
-
-### 快速打包命令
-
-**Windows:**
-```cmd
-gradlew.bat clean buildPlugin
-```
-
-**Linux/Mac:**
 ```bash
-./gradlew clean buildPlugin
+./gradlew buildPlugin
 ```
 
-这会先清理旧的构建文件，然后构建新的插件 ZIP。
+当前版本的可安装包输出为：
 
-### 常见问题
+```text
+build/distributions/EzCodeMarks-1.0.1.zip
+```
 
-#### buildSearchableOptions 任务失败
+安装步骤：
 
-如果遇到 `buildSearchableOptions` 任务失败的错误，这是正常的。该任务用于生成可搜索选项，但对于 MVP 版本不是必需的。
+1. 打开 IntelliJ IDEA。
+2. 进入 `Settings → Plugins`。
+3. 点击齿轮并选择 `Install Plugin from Disk…`。
+4. 选择生成的 ZIP 并按提示重启。
 
-**解决方案：**
-已在 `build.gradle.kts` 中禁用了该任务。如果仍然遇到问题，可以：
+普通 JAR 位于 `build/libs/`，仅用于构建内部产物；分发应使用 `buildPlugin` 生成的 ZIP。
 
-1. **跳过该任务（推荐）：**
-   ```cmd
-   gradlew.bat buildPlugin -x buildSearchableOptions
-   ```
+## 人工验收清单
 
-2. **或者直接构建 JAR：**
-   ```cmd
-   gradlew.bat jar
-   ```
+在 `./gradlew runIde` 沙盒中检查：
 
-3. **检查构建配置：**
-   确保 `build.gradle.kts` 中的 `buildSearchableOptions` 任务已禁用：
-   ```kotlin
-   named("buildSearchableOptions") {
-       enabled = false
-   }
-   ```
+- Commit ToolWindow 与传统 Commit Dialog 都显示 Create、Generate、Generate With Additional Requirements；Format 默认隐藏。
+- Action 顺序、两个默认快捷键、Find Action 与 Keymap 分组正确。
+- 工具栏隐藏不会影响快捷键调用；运行中再次触发可以取消，同文档兄弟 Action 暂时禁用。
+- 未配置 Provider 可打开 AI Providers；连接测试、模型获取与 PasswordSafe 保存正常。
+- 首次源码共享确认、Endpoint/Provider 变化后的重新确认，以及敏感/二进制/生成文件过滤正确。
+- AI 结果只在预览 Apply 后写回；取消、失败、校验失败、原文中途修改与过期结果均保留原提交信息。
+- 两个项目或两个提交文档之间的运行/取消状态互不影响。
+- 英语、简体中文、日语和韩语界面无缺失 key 或枚举名泄漏。
+
+## 发布边界
+
+构建与本地验证不会发布插件。发布 JetBrains Marketplace 属于外部写入，需要单独确认并配置发布凭据；不要把 Token 写入仓库或构建脚本。

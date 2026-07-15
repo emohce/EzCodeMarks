@@ -1,245 +1,125 @@
-# CodeMark
+# EzCodeMarks
 
-A structured bookmark and navigation plugin for IntelliJ IDEA, providing tool windows, editor integration, reference relationships, and step-by-step navigation for large-scale code exploration and annotation scenarios.
+An IntelliJ IDEA plugin for structured code bookmarks and assisted Git commit authoring. It combines code tours, Markdown notes, and editor integration with a structured/AI-assisted commit workflow while keeping both feature areas isolated in storage and runtime state.
 
-[📖 中文版](./README.md)
+[简体中文](README.md)
 
-## Overview
+## Main Capabilities
 
-**CodeMark** is an IntelliJ IDEA plugin that provides structured code bookmark management with support for:
+### CodeMarks and guided navigation
 
-- **Hierarchical Bookmark System**: Layered management of groups, process nodes, and notes
-- **Smart Navigation**: Editor gutter icons, line-end hints, and process step navigation
-- **Reference Management**: Inter-node reference relationships with circular dependency detection
-- **Data Persistence**: Local JSON storage with undo support
-- **Bidirectional Sync**: Synchronized state between tool windows and editor
+- Organize project knowledge with Bookmark, Group, Process, and DescriptiveBookmark nodes.
+- Search, reorder, inspect Markdown details, and step through flows in the tool window.
+- Link the tree and editor through gutter icons, line-end hints, and bidirectional selection.
+- Store bookmark data in `.codemark/codemark.json`, ready to version when desired.
 
-### Core Features
+### Git commit message assistant
 
-- **Four Node Types**: Bookmark, Group, Process, DescriptiveBookmark
-- **Precise Positioning**: Exact navigation based on file path, line number, and column
-- **Reference Management**: Inter-node references with circular dependency detection
-- **Process Navigation**: Previous/Next step navigation within process nodes
-- **Visual Enhancement**: Gutter icons, line-end inlay hints, and code highlighting
-- **Detail Notes**: Tree nodes show the first description line as a suffix; `F1` opens a Markdown detail popup
-- **Performance Optimization**: Index service, incremental updates, and lazy loading
+- Compose structured messages with `type`, `scope`, `subject`, `body`, `BREAKING CHANGE`, `Closes`, and `skip ci`.
+- Generate from included Git changes, add extra requirements, format an existing draft, or use Smart Echo.
+- Review and edit every AI result before applying it; cancellation, failure, and validation errors preserve the original message.
+- Manage Velocity templates, commit types, and multiple OpenAI Compatible or Anthropic provider profiles.
+- Keep API keys in IntelliJ PasswordSafe and gate filtered, size-limited source context behind per-endpoint consent.
+- Use English, Simplified Chinese, Japanese, or Korean Action, settings, validation, and error resources.
 
 ## Requirements
 
-- **IntelliJ IDEA**: 2025.3+ (sinceBuild 253.*)
-- **Kotlin**: 2.1.20
-- **Gradle**: intellij-platform-gradle-plugin 2.10.2
-- **JDK**: 21 (source/target)
+- IntelliJ IDEA 2025.3+ (since build 253)
+- JDK 21
+- Kotlin 2.4.0
+- IntelliJ Platform Gradle Plugin 2.16.0
+- Git4Idea (bundled with the IDE)
 
-## Installation and Running
+## Development and Installation
 
-### Development Environment
 ```bash
-# Clone the project
 git clone <repository-url>
-cd CodeRemarkTour
-
-# Run sandbox environment
+cd EzCodeMark
 ./gradlew runIde
 ```
 
-### Build and Release
+Build the installable plugin:
+
 ```bash
-# Build plugin package
 ./gradlew buildPlugin
-
-# Publish to marketplace (requires configuration)
-./gradlew publishPlugin
 ```
 
-> **Note**: The `buildSearchableOptions` task is disabled to reduce build failure risks.
+The ZIP is written to `build/distributions/` and can be installed through `Settings | Plugins | Install Plugin from Disk…`. See the [build guide](doc/build-guide.md) for the complete packaging and verification flow.
 
-## Quick Start
+## Using the Commit Message Assistant
 
-### Basic Operations
+Four stable Actions are registered in the commit-message area and the Keymap group:
 
-#### Creating Nodes in Editor
-- **Right-click Menu**: "Add CodeMark Here", "Add Group Here", "Add Process Entry Here", "Add Note Here"
-- **Keyboard Shortcuts**:
-  - `Shift+F2` - Add bookmark
-  - `Shift+F3` - Add group
-  - `Shift+F4` - Add note
-  - `F1` - Show details for the hovered/selected tree node
-  - `Shift+F1` - Show floating details for the CodeMark at the current caret line
-  - `Alt+Shift+↓` - Next bookmark
-  - `Alt+Shift+↑` - Previous bookmark
-  - `Shift+Delete` - Delete current line bookmark
+| Action | Shown by default | Windows / Linux | macOS |
+| --- | --- | --- | --- |
+| Create Commit Message | Yes | `Ctrl+Alt+Shift+M` | `⌘⌥⇧M` |
+| Generate Commit Message | Yes | `Ctrl+Alt+Shift+G` | `⌘⌥⇧G` |
+| Generate With Additional Requirements | Yes | Unassigned | Unassigned |
+| Format Commit Message | No | Unassigned | Unassigned |
 
-#### Tool Window Operations
-- **Tree View**: Support drag-and-drop moving, right-click menu, search highlighting, and first-line description suffixes for Bookmark/Group nodes
-- **Detail Popup**: Press `F1` while the tree or search is active to show the full description of the hovered/selected node
-- **Markdown Details**: Descriptions render as Markdown, and project-relative links can jump to files and line numbers
-- **Process Navigation**: Previous/Next buttons for process nodes
-- **Search Function**: Top search bar supports name and description search
+Toolbar visibility only affects the Commit Message place. Hidden Actions remain available from their shortcuts and Find Action. A running Action changes to a cancel icon and can be triggered again to cancel; its three siblings are temporarily disabled for the same commit document.
 
-#### Editing Experience
-- **Detached Editor**: Press `F2` in Description/Markdown fields when editing a bookmark or note to open an extra editor dialog
+Configuration is under `Settings | Tools | EzCodeMarks | Git Commit Message`:
 
-#### Editor Integration Architecture
-- **Gutter Icons**: Left-click selects tree node, right-click shows operation menu
-- **Line-end Hints**: Display node information, click to navigate
-- **Bidirectional Selection**: Tool window selection syncs with editor position
+- `Git Commit Message`: toolbar visibility, current Keymap/conflicts, field visibility, type display, skip-ci, and Smart Echo.
+- `Templates & Types`: template lifecycle, global default, Velocity validation/live preview, and ordered type descriptions.
+- `AI Providers`: active profile, protocol, endpoint, model, temperature, language, streaming, reasoning compatibility, connection testing, and model discovery.
+- `Project Defaults`: project template override, global-default restore, and unfinished-draft clearing.
 
-## Architecture Design
+When no AI profile is configured, the Actions provide a recoverable link to provider settings. Project drafts and template overrides use IDE workspace state and never enter `.codemark`.
 
-### Layered Architecture
+## CodeMarks Quick Start
 
+Use these shortcuts in the editor:
+
+| Shortcut | Action |
+| --- | --- |
+| `Shift+F2` | Create or edit a CodeMark on the current line |
+| `Shift+F3` | Create a group |
+| `Shift+F4` | Create a note |
+| `F1` | Show details for the hovered/selected tree node |
+| `Shift+F1` | Show details for the CodeMark at the caret |
+| `Alt+Shift+↓` / `Alt+Shift+↑` | Next / previous CodeMark |
+| `Shift+Delete` | Delete the CodeMark on the current line |
+
+Open the tool window through `View | Tool Windows | EzCodeMarks`. The tree supports drag-and-drop, search, Markdown details, and project-relative file/line links. Press `F2` in a Description or Markdown field to open the detached editor.
+
+## Architecture and Data Boundaries
+
+The bookmark feature keeps its existing Repository, ViewModel, SelectionBus, and ToolWindow architecture. The commit assistant is a separate `commitmessage` vertical slice:
+
+| Layer | Responsibility | Entry |
+| --- | --- | --- |
+| Domain | Structured models, parsing, template/provider contracts, context policy | [CommitMessageModels.kt](src/main/kotlin/emohce/domain/commitmessage/CommitMessageModels.kt#L5) |
+| Data | State, PasswordSafe, Velocity, provider HTTP, Git context, coordination | [CommitMessageAiService.kt](src/main/kotlin/emohce/data/commitmessage/CommitMessageAiService.kt#L22) |
+| Presentation | VCS Actions, commit-context adapter, dialogs, settings, bundles | [CommitMessageActions.kt](src/main/kotlin/emohce/presentation/commitmessage/action/CommitMessageActions.kt#L42) |
+
+The commit assistant does not use the Bookmark ToolWindow, BookmarkViewModel, SelectionBus, or `.codemark`. Application preferences use IDE configuration storage, project template/draft state uses workspace storage, and API keys are stored only by PasswordSafe.
+
+Provider traffic honors the IDE proxy, uses a 15-second connection timeout and a cancellable 120-second read limit. Git context filters binary/generated files plus `.env*`, credentials, keys, certificates, SSH, service-account, and secret paths/content. Version 1 has no bypass.
+
+## Verification
+
+```bash
+./gradlew test
+./gradlew buildPlugin
+./gradlew verifyPluginProjectConfiguration
+./gradlew verifyPluginStructure
+./gradlew verifyPlugin
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Presentation Layer                   │
-├─────────────────┬─────────────────┬─────────────────────┤
-│   ToolWindow    │   Editor Actions│   Editor Integration│
-│  BookmarkPanel  │ Create*Actions │ Highlighter/Inlay   │
-│   ViewModel     │  Navigation    │  SelectionBus       │
-└─────────────────┴─────────────────┴─────────────────────┘
-┌─────────────────────────────────────────────────────────┐
-│                     Domain Layer                        │
-├─────────────────┬─────────────────┬─────────────────────┤
-│    Models       │   Repositories  │     UseCases        │
-│  BookmarkNode   │  BookmarkRepo   │ ProcessNavigation   │
-│   Reference     │ ReferenceRepo   │  SyncReferences      │
-│  ProcessProgress│                 │ DetectCircularRef   │
-└─────────────────┴─────────────────┴─────────────────────┘
-┌─────────────────────────────────────────────────────────┐
-│                      Data Layer                         │
-├─────────────────┬─────────────────┬─────────────────────┤
-│   BookmarkStore │  DataSource     │    Persistence       │
-│   IndexService  │ PersistentState │   NodeData/JSON     │
-└─────────────────┴─────────────────┴─────────────────────┘
-```
 
-### Core Components
+Tests cover structured parsing/rendering, Velocity, state migration, the PasswordSafe boundary, context filtering/caps, providers/SSE/cancellation/fallbacks, and Action, shortcut, DataKey, and settings lifecycles.
 
-#### Data Models
-- **BookmarkNode**: sealed class containing four node types
-  - `Bookmark`: File location bookmarks
-  - `Group`: Group containers
-  - `Process`: Process nodes with step navigation support
-  - `DescriptiveBookmark`: Descriptive bookmarks
+## Documentation
 
-#### Storage System
-- **BookmarkStore**: In-memory data management with undo support
-- **File Persistence**: `.bookmarkx/bookmarkx.json`
-- **Index Service**: `BookmarkIndexService` for fast lookup
+- [User guide](doc/USER_GUIDE.md)
+- [Build guide](doc/build-guide.md)
+- [Change log](doc/change-log.md)
+- [Bookmark tree operations specification](doc/260604-cursor-tree-operations-spec.md)
+- [Current project status](vibe/specs/PROJECT_STATUS.md)
 
-#### Editor Integration
-- **BookmarkHighlighterService**: Gutter icons and line highlighting
-- **BookmarkLineEndInlayProvider**: Line-end hints
-- **SelectionBus**: Component state synchronization
+## License and Attribution
 
-#### Reactive Architecture
-- **StateFlow**: UI state management
-- **SharedFlow**: Side effect handling (navigation, notifications, etc.)
-- **Coroutines**: Async operations and concurrency control
+This project is licensed under the terms in [LICENSE](LICENSE).
 
-## Advanced Features
-
-### Reference System
-- **Node References**: Support establishing reference relationships between nodes
-- **Circular Detection**: Automatically detect and prevent reference cycles
-- **Reference Counting**: Track how many times nodes are referenced
-
-### Process Management
-- **Process Nodes**: Organize related bookmarks into processes
-- **Step Navigation**: Previous/Next navigation within processes
-- **Progress Tracking**: Display current process progress
-
-### Search and Filtering
-- **Full-text Search**: Support name and description search
-- **Real-time Filtering**: Update results in real-time as you type
-- **Highlight Display**: Highlight search results
-
-### Data Security
-- **Auto Save**: Operations automatically saved locally
-- **Undo Support**: Support undoing recent operations
-- **Data Backup**: Automatically create backup files
-
-## Known Limitations
-
-### Feature Limitations
-- ❌ No remote sync functionality
-- ❌ No multi-user collaboration
-- ❌ No permission control mechanism
-- ❌ No complex conflict resolution strategies
-
-### Performance Limitations
-- ⚠️ Large-scale data (1000+ bookmarks) not yet stress-tested
-- ⚠️ Complex reference relationships may affect performance
-- ⚠️ Index building may be slow for large projects on startup
-
-### Compatibility
-- ⚠️ IDE built-in bookmark sync disabled by default
-- ⚠️ Advanced features require manual enablement
-
-## Project Documentation
-
-### User Documentation
-- **User Guide**: [doc/USER_GUIDE.md](./doc/USER_GUIDE.md) - Detailed feature usage guide
-
-### Development Documentation
-- **Tree Operations Specification**: [doc/260604-cursor-tree-operations-spec.md](./doc/260604-cursor-tree-operations-spec.md) - Precise tree operation specifications
-- **Build Guide**: [doc/build-guide.md](./doc/build-guide.md)
-- **Change Log**: [doc/change-log.md](./doc/change-log.md)
-- **Archive**: [doc/archive/](./doc/archive/) - Historical documents and plans
-
-## Development Guide
-
-### Key Entry Points
-- **ToolWindow Factory**: `emohce.presentation.toolwindow.CodeMarkToolWindowFactory`
-- **Startup Activity**: `emohce.core.startup.BookmarkStartupActivity`
-- **Plugin Configuration**: `./src/main/resources/META-INF/plugin.xml`
-
-### Core Classes
-- **BookmarkViewModel**: UI state management and business logic
-- **BookmarkRepository**: Data access layer
-- **BookmarkStore**: Data storage and persistence
-- **SelectionBus**: Inter-component communication
-
-### Build Configuration
-- **Build Script**: `./build.gradle.kts`
-- **JDK Version**: 21
-- **IDE Version**: IntelliJ IDEA 2025.3+ (sinceBuild 253)
-
-### Debug and Configuration
-- **Built-in Bookmark Sync**: Force enable via Registry `coderemarktour.enableLegacyIntellijSync`
-- **Log Level**: View `[CODEMARK]` prefix logs in IDE logs
-- **Data File Location**: Project root directory `.bookmarkx/bookmarkx.json`
-
-## Contributing Guidelines
-
-### Development Environment Setup
-1. Clone the project locally
-2. Ensure JDK 21 is installed
-3. Run `./gradlew runIde` to start development environment
-4. Build zip `./gradlew buildPlugin` to create plugin package
-5. Test plugin functionality in sandbox IDE
-
-### Code Standards
-- Follow Kotlin official coding standards
-- Use single data source principle
-- Maintain reactive programming patterns
-- Add appropriate logging
-
-### Commit Standards
-- Use clear commit messages
-- One commit per task
-- Include necessary test cases
-- Update relevant documentation
-
-## License
-
-This project is licensed under the [LICENSE](./LICENSE) license.
-
-## Acknowledgments
-
-Thanks to the IntelliJ Platform for providing the plugin development framework, and to related open source projects for inspiration:
-
-- **[CodeTour](https://github.com/LefterisXris/CodeTour)** - VS Code code navigation plugin, providing design inspiration for process navigation features
-- **[Bookmark-X](https://github.com/Nonoas/Bookmark-X)** - IntelliJ bookmark management plugin, providing reference implementation for editor integration
-
-These projects' exploration in code bookmark management and navigation functionality has provided valuable experience and ideas for this project.
+The CodeMarks feature draws inspiration from [CodeTour](https://github.com/LefterisXris/CodeTour) and [Bookmark-X](https://github.com/Nonoas/Bookmark-X). The commit assistant is a behavior-level redesign inspired by the Apache-2.0 [Git Commit Message Helper](https://github.com/AutismSuperman/git-commit-message-helper), implemented independently for the current EzCodeMarks Kotlin/JDK 21/IntelliJ 2025.3 architecture. Its Swing `.form`, reflection, raw Git/HTTP, and plaintext-secret implementation were not copied.

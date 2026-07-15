@@ -1,14 +1,15 @@
-# EzCodeMark 用户指南
+# EzCodeMarks 用户指南
 
-> **版本**：1.0  
-> **更新日期**：2026-06-05  
-> **适用版本**：EzCodeMark 0.0.1+
+> **版本**：1.0.1
+> **更新日期**：2026-07-15
+> **适用版本**：EzCodeMarks 1.0.1+
 
 ---
 
 ## 目录
 
 - [快速开始](#快速开始)
+- [Git 提交信息助手](#git-提交信息助手)
 - [基本操作](#基本操作)
 - [书签树管理](#书签树管理)
 - [编辑器集成](#编辑器集成)
@@ -32,7 +33,7 @@
 
 ### 打开工具窗口
 
-- 通过菜单：`View → Tool Windows → EzCodeMark`
+- 通过菜单：`View → Tool Windows → EzCodeMarks`
 - 或点击右侧边栏的插件图标
 
 ### 创建第一个书签
@@ -41,6 +42,63 @@
 2. 按 `Shift+F2` 或右键选择 `Add CodeMark Here`
 3. 输入书签名称和描述
 4. 点击 OK
+
+---
+
+## Git 提交信息助手
+
+### 入口与默认快捷键
+
+提交信息助手会出现在非模态 Commit ToolWindow 与传统 Commit Dialog 的提交信息 Action 区域，也可通过 Find Action 或 Keymap 调用。
+
+| Action | 默认显示 | Windows / Linux | macOS | 用途 |
+| --- | --- | --- | --- | --- |
+| Create Commit Message | 是 | `Ctrl+Alt+Shift+M` | `⌘⌥⇧M` | 打开结构化编辑器 |
+| Generate Commit Message | 是 | `Ctrl+Alt+Shift+G` | `⌘⌥⇧G` | 根据已包含的变更生成 |
+| Generate With Additional Requirements | 是 | 未预设 | 未预设 | 先输入附加要求再生成 |
+| Format Commit Message | 否 | 未预设 | 未预设 | 用 AI 格式化当前草稿 |
+
+工具栏显隐只影响 Commit Message 位置，不会删除 Action 或快捷键。运行中的 Action 会切换为取消图标；再次触发可取消，同一提交文档的另外三个助手 Action 会暂时禁用。
+
+### 创建结构化提交信息
+
+1. 在提交面板点击 `Create Commit Message`。
+2. 编辑 `type`、`scope`、`subject`、`body`、`breaking changes`、`closes` 与 `skip-ci`。
+3. `subject` 始终显示且必须填写。
+4. 点击 Apply 后，当前项目选中的 Velocity 模板会渲染并写回提交框。
+
+初始值按以下顺序取得：当前非空提交信息的本地解析结果、项目未完成草稿、默认值。启用 Smart Echo 且已有可用 AI Profile 时，会在后台增强解析结果。取消结构化对话框会保留项目草稿；成功应用后会清除草稿。
+
+### AI 生成与格式化
+
+- `Generate` 使用提交工作流中已包含的变更与未版本化文件；历史提交场景只读取 IDE 提供的公开 revision。
+- `Generate With Additional Requirements` 会先打开多行输入框；取消该对话框不会发起网络请求。
+- `Format` 只在当前提交信息非空时可用，保留事实含义并按配置语言返回结果。
+- 所有 AI 结果先进入并排预览：左侧为原始内容，右侧结果可编辑，同时显示 Provider、Endpoint、模板和被过滤文件。
+- 只有点击 Apply 才会写回提交框。Copy 只复制结果；Cancel、网络失败、输出校验失败、操作过期或运行期间原文被修改时，原文保持不变。
+
+### 设置树
+
+进入 `Settings → Tools → EzCodeMarks → Git Commit Message`：
+
+- `Git Commit Message`：配置工具栏显隐、查看当前 Keymap/快捷键冲突、打开 Keymap 设置、控制字段显示与 type 展示方式，以及 skip-ci、Smart Echo。
+- `Templates & Types`：新增、复制、删除模板，选择全局默认，编辑/校验 Velocity 并实时预览，管理提交类型及描述顺序。内置模板不可删除或重命名，可恢复默认内容。
+- `AI Providers`：管理多个 Profile，选择 OpenAI Compatible 或 Anthropic，设置 URL、模型、温度、语言、Streaming 与 Reasoning compatibility，并测试连接或获取模型。
+- `Project Defaults`：覆盖本项目模板、恢复全局默认、清除未完成草稿。
+
+“配置快捷键…”只打开 IntelliJ 公共 Keymap 设置并定位 Action，不会在运行时修改用户键位方案。复制 Profile 不复制 API 密钥；删除 Profile 会同步删除其 PasswordSafe 凭据。
+
+### Provider 与隐私边界
+
+- OpenAI Compatible 使用 `/chat/completions` 与 `/models`，通过 Bearer 认证。
+- Anthropic 使用 `/v1/messages` 与 `/v1/models`，通过 `x-api-key` 认证。
+- API 密钥只保存在 IntelliJ PasswordSafe，不会写入插件 XML、项目 workspace 或 `.codemark`。
+- 每个 Profile 第一次向当前 Provider 类型与 Endpoint 发送源码上下文时，必须确认数据共享；Endpoint、Provider 或隐私策略变化后会再次确认。
+- 上下文会过滤二进制、生成文件、`.env*`、凭据、token、私钥、证书、SSH、service-account、Docker/Kubernetes 认证文件等敏感路径或内容。
+- 状态、diff、未版本化文本和最近提交均有固定预算；v1 不提供关闭敏感过滤或突破预算的开关。
+- 请求遵循 IDE Proxy，支持取消；单次操作最多调用 Provider 三次，只对明确的 streaming/reasoning 参数不兼容或结构化 JSON 修复做受控回退。
+
+项目模板 ID 与未完成草稿保存在 IDE workspace state，不会进入 CodeMark 数据文件。
 
 ---
 
@@ -86,7 +144,7 @@
 
 ### 树结构
 
-EzCodeMark 使用树形结构组织书签，支持以下节点类型：
+EzCodeMarks 使用树形结构组织书签，支持以下节点类型：
 
 - **Bookmark（书签）** - 关联代码位置的书签
 - **Group（分组）** - 文件夹式容器，可包含其他节点
@@ -134,7 +192,7 @@ Markdown 链接支持基于项目根目录解析：
 |------|------|
 | `[文档](USER_GUIDE.md)` | 打开项目内相对文件 |
 | `[指定行](USER_GUIDE.md:12)` | 打开文件并跳转到第 12 行 |
-| `[指定列](../src/main/kotlin/emohce/core/startup/BookmarkStartupActivity.kt:7:3)` | 打开文件并跳转到第 7 行第 3 列 |
+| 文件路径后接“行号:列号” | 例如打开文件并跳转到第 7 行第 3 列 |
 | `[GitHub 行号](../README.md#L5)` | 打开文件并跳转到第 5 行 |
 | `[官网](https://example.com)` | 用浏览器打开外部链接 |
 
