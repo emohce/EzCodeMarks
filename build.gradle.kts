@@ -24,10 +24,10 @@ dependencies {
     intellijPlatform {
         intellijIdea("2025.3")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
-
-
-        // Add plugin dependencies for compilation here, example:
-        // bundledPlugin("com.intellij.java")
+        bundledModule("intellij.platform.vcs.impl")
+        // 2025.3 ships this base module outside the bundled-module index exposed by Gradle 2.16.
+        bundledLibrary("lib/module-intellij.libraries.velocity.jar")
+        bundledPlugin("Git4Idea")
     }
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
@@ -38,6 +38,17 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.12")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("app.cash.turbine:turbine:1.1.0")
+}
+
+// IDEA 2025.3 provides a JetBrains-patched coroutines runtime in util-8.jar.
+// External test libraries may otherwise shadow it with an ABI-incompatible Maven artifact.
+configurations.named("testRuntimeClasspath") {
+    exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+    exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk7")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
 }
 
 intellijPlatform {
@@ -73,6 +84,11 @@ tasks {
 
     named("buildSearchableOptions") {
         enabled = false
+    }
+
+    // The 2.16 Ant instrumenter uses shared task definitions; serialize main/test instrumentation.
+    named("instrumentTestCode") {
+        mustRunAfter("instrumentCode")
     }
 
     named<PrepareSandboxTask>(Tasks.PREPARE_SANDBOX) {
