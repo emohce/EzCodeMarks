@@ -140,6 +140,7 @@ class HttpLlmProviderClient : LlmProviderClient {
             put("model", profile.model)
             put("temperature", profile.temperature)
             put("stream", streaming)
+            request.maxOutputTokens?.let { put("max_tokens", it.coerceAtLeast(1)) }
             putJsonArray("messages") {
                 add(buildJsonObject {
                     put("role", "system")
@@ -158,7 +159,7 @@ class HttpLlmProviderClient : LlmProviderClient {
         LlmProviderType.ANTHROPIC -> buildJsonObject {
             put("model", profile.model)
             put("system", request.systemPrompt)
-            put("max_tokens", 2_048)
+            put("max_tokens", request.maxOutputTokens?.coerceAtLeast(1) ?: 2_048)
             put("temperature", profile.temperature)
             put("stream", streaming)
             putJsonArray("messages") {
@@ -171,6 +172,11 @@ class HttpLlmProviderClient : LlmProviderClient {
                 ReasoningCompatibilityPolicy.parameters(profile).forEach { (key, value) -> put(key, value) }
             }
         }
+
+        LlmProviderType.CHATGPT_CODEX -> throw ProviderException(
+            ProviderErrorKind.INVALID_RESPONSE,
+            "ChatGPT Codex requests require the Codex App Server client",
+        )
     }
 
     private fun headers(profile: LlmProfile, apiKey: String, streaming: Boolean): Map<String, String> = buildMap {
@@ -183,17 +189,29 @@ class HttpLlmProviderClient : LlmProviderClient {
                 put("x-api-key", apiKey)
                 put("anthropic-version", "2023-06-01")
             }
+            LlmProviderType.CHATGPT_CODEX -> throw ProviderException(
+                ProviderErrorKind.INVALID_RESPONSE,
+                "ChatGPT Codex requests require the Codex App Server client",
+            )
         }
     }
 
     private fun completionEndpoint(profile: LlmProfile): String = when (profile.provider) {
         LlmProviderType.OPENAI_COMPATIBLE -> LlmEndpointResolver.openAiCompletion(profile.baseUrl)
         LlmProviderType.ANTHROPIC -> LlmEndpointResolver.anthropicMessages(profile.baseUrl)
+        LlmProviderType.CHATGPT_CODEX -> throw ProviderException(
+            ProviderErrorKind.INVALID_RESPONSE,
+            "ChatGPT Codex requests require the Codex App Server client",
+        )
     }
 
     private fun modelsEndpoint(profile: LlmProfile): String = when (profile.provider) {
         LlmProviderType.OPENAI_COMPATIBLE -> LlmEndpointResolver.openAiModels(profile.baseUrl)
         LlmProviderType.ANTHROPIC -> LlmEndpointResolver.anthropicModels(profile.baseUrl)
+        LlmProviderType.CHATGPT_CODEX -> throw ProviderException(
+            ProviderErrorKind.INVALID_RESPONSE,
+            "ChatGPT Codex requests require the Codex App Server client",
+        )
     }
 
     private fun execute(
@@ -328,6 +346,10 @@ class HttpLlmProviderClient : LlmProviderClient {
                 LlmProviderType.ANTHROPIC -> root["content"]?.asArrayOrEmpty()
                     ?.joinToString("") { it.asObjectOrNull()?.get("text")?.asStringOrNull().orEmpty() }
                     .orEmpty()
+                LlmProviderType.CHATGPT_CODEX -> throw ProviderException(
+                    ProviderErrorKind.INVALID_RESPONSE,
+                    "ChatGPT Codex responses require the Codex App Server client",
+                )
             }
         }
 
@@ -341,6 +363,10 @@ class HttpLlmProviderClient : LlmProviderClient {
                 LlmProviderType.OPENAI_COMPATIBLE -> root["choices"]?.asArrayOrEmpty()?.firstOrNull()
                     ?.asObjectOrNull()?.get("delta")?.asObjectOrNull()?.get("content").asMessageText()
                 LlmProviderType.ANTHROPIC -> root["delta"]?.asObjectOrNull()?.get("text")?.asStringOrNull().orEmpty()
+                LlmProviderType.CHATGPT_CODEX -> throw ProviderException(
+                    ProviderErrorKind.INVALID_RESPONSE,
+                    "ChatGPT Codex responses require the Codex App Server client",
+                )
             }
         }
     }

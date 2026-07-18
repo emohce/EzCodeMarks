@@ -7,10 +7,11 @@ import java.security.MessageDigest
 import java.net.URI
 
 object SourceContextConsent {
-    fun fingerprint(profile: LlmProfile): String {
+    fun fingerprint(profile: LlmProfile, accountGeneration: String = ""): String {
         val material = listOf(
             profile.provider.name,
             normalizeEndpoint(profile.baseUrl),
+            accountGeneration,
             CommitMessageDefaults.PRIVACY_POLICY_VERSION,
         ).joinToString("\n")
         return MessageDigest.getInstance("SHA-256")
@@ -43,3 +44,15 @@ object SourceContextConsent {
         }
     }
 }
+
+internal fun isSafeProviderEndpoint(value: String): Boolean {
+    val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return false
+    return uri.scheme?.lowercase() in setOf("http", "https") &&
+        uri.host != null && uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null
+}
+
+internal fun hasSameCredentialDestination(left: LlmProfile, right: LlmProfile): Boolean =
+    left.provider == right.provider &&
+        normalizeProviderEndpoint(left.baseUrl) == normalizeProviderEndpoint(right.baseUrl)
+
+private fun normalizeProviderEndpoint(value: String): String = value.trim().trimEnd('/')
