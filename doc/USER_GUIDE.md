@@ -1,8 +1,8 @@
 # EzCodeMarks 用户指南
 
-> **版本**：1.0.1
-> **更新日期**：2026-07-15
-> **适用版本**：EzCodeMarks 1.0.1+
+> **版本**：1.2.0
+> **更新日期**：2026-07-17
+> **适用版本**：EzCodeMarks 1.2.0+
 
 ---
 
@@ -54,7 +54,7 @@
 | Action | 默认显示 | Windows / Linux | macOS | 用途 |
 | --- | --- | --- | --- | --- |
 | Create Commit Message | 是 | `Ctrl+Alt+Shift+M` | `⌘⌥⇧M` | 打开结构化编辑器 |
-| Generate Commit Message | 是 | `Ctrl+Alt+Shift+G` | `⌘⌥⇧G` | 根据已包含的变更生成 |
+| Generate Commit Message | 是 | `Ctrl+Alt+X` | `⌃⌥X` | 根据已包含的变更生成 |
 | Generate With Additional Requirements | 是 | 未预设 | 未预设 | 先输入附加要求再生成 |
 | Format Commit Message | 否 | 未预设 | 未预设 | 用 AI 格式化当前草稿 |
 
@@ -73,32 +73,76 @@
 
 - `Generate` 使用提交工作流中已包含的变更与未版本化文件；历史提交场景只读取 IDE 提供的公开 revision。
 - `Generate With Additional Requirements` 会先打开多行输入框；取消该对话框不会发起网络请求。
-- `Format` 只在当前提交信息非空时可用，保留事实含义并按配置语言返回结果。
-- 所有 AI 结果先进入并排预览：左侧为原始内容，右侧结果可编辑，同时显示 Provider、Endpoint、模板和被过滤文件。
-- 只有点击 Apply 才会写回提交框。Copy 只复制结果；Cancel、网络失败、输出校验失败、操作过期或运行期间原文被修改时，原文保持不变。
+- `Format` 只在当前提交信息非空时可用。它先打开一次性优化提示词输入框：留空时使用当前 Commit Style，取消不会读取凭据或发起请求；提示词不会持久化。
+- `Format` 仅把当前提交文本、模板、风格和本次提示词交给 AI，不采集或发送 Git status、diff、未版本化文件、revision 或最近提交；结果保留事实含义并按配置语言返回。
+- AI 结果通过结构化校验和安全模板渲染后，默认原子写回提交框；可在根设置页开启“写回前预览”，此时左侧显示原文，右侧结果可编辑，并显示 Provider、Endpoint、模板、风格和被过滤文件。
+- 预览模式下只有点击 Apply 才会写回，Copy 只复制结果。无论是否启用预览，Cancel、网络失败、输出校验失败、操作过期或运行期间原文被修改时，原文都保持不变。
+
+### 在预览页继续优化
+
+启用“写回前预览”后，结果页会增加“使用 AI 再优化…”和“优化记录”操作：
+
+1. 点击“使用 AI 再优化…”，输入本次修改提示。
+2. 可先点击“使用 AI 优化提示词…”。发送前会展示本次提示词优化实际使用的完整 SYSTEM/USER 文本，确认后才调用 Provider；AI 返回的优化提示仍可编辑。
+3. 点击“确认并优化提交信息”时，会再次展示实际用于修改当前提交信息的完整 SYSTEM/USER 文本。确认后才生成新结果。
+4. 成功结果替换右侧可编辑内容；取消、失败、过期或校验失败不会修改结果，也不会新增记录。
+5. “优化记录”显示最开始的提交信息、首次 AI 结果、当前最终结果，以及每次成功操作的修改前后文本、输入提示、AI 优化提示、最终确认提示和两类提示词请求；复制记录会包含全部这些内容。
+
+历史只保存在当前预览对话框内存中，关闭后即释放，不会写入应用设置、workspace、`.codemark`、日志或分析数据。二次优化请求只包含当前结果、用户确认指令、已校验模板和风格；不包含最开始的提交信息，也不会重新采集 Git status、diff、文件、revision 或提交历史。一次明确操作共用最多 3 次 Provider 请求：可选提示词优化、提交信息优化，以及必要时的一次结构化 JSON 修复。
+
+### 提交风格
+
+- 内置 `标准` 保持原助手的均衡行为；`精简` 优先使用 72 字符以内的祈使句 subject，除非关键信息无法容纳，否则省略 body。
+- 可在 `Commit Template → Style` 新建自定义风格，填写自然语言描述、模型提示词和可选 Velocity 模板，并实时查看最终渲染预览。
+- “使用 AI 生成提示词与模板…”只发送风格描述、当前提示词和已校验模板，不发送 Git diff 或源码；生成结果必须在对话框确认后才更新当前风格。
+- 使用 Find Action、Keymap 或 `Tools → EzCodeMarks → Git Commit Message → Select Commit Style` 可快速切换当前项目风格。
 
 ### 设置树
 
 进入 `Settings → Tools → EzCodeMarks → Git Commit Message`：
 
-- `Git Commit Message`：配置工具栏显隐、查看当前 Keymap/快捷键冲突、打开 Keymap 设置、控制字段显示与 type 展示方式，以及 skip-ci、Smart Echo。
-- `Templates & Types`：新增、复制、删除模板，选择全局默认，编辑/校验 Velocity 并实时预览，管理提交类型及描述顺序。内置模板不可删除或重命名，可恢复默认内容。
-- `AI Providers`：管理多个 Profile，选择 OpenAI Compatible 或 Anthropic，设置 URL、模型、温度、语言、Streaming 与 Reasoning compatibility，并测试连接或获取模型。
-- `Project Defaults`：覆盖本项目模板、恢复全局默认、清除未完成草稿。
+- `Git Commit Message`：配置工具栏显隐、查看当前 Keymap/快捷键冲突、打开 Keymap 设置、控制字段显示与 type 展示方式、skip-ci、是否在 AI 写回前显示预览，以及全局附加指令和同步冲突处理。
+- `Commit Template`：按原助手布局提供 Template / Type / Style 页签。Template 管理默认值和安全 Velocity 编辑/预览；Type 管理 conventional commit 类型与顺序；Style 管理标准、精简和自定义风格及 AI 优化。
+- `LLM Settings`：按原助手布局提供顶部 Active Model、Temperature、Response Language、Smart Echo、Streaming、Reasoning 与 Test，下方表格用于 Profile 的新增、删除、编辑和复制。表格选中只决定管理对象，不会偷偷切换 Active Model；可点击铅笔按钮编辑，也可左键双击具体 Profile 行进入同一编辑对话框。
+- Profile 编辑对话框中的 API Key 使用宽幅掩码输入；新输入密钥在当前设置会话中保留，Apply 后也不会清空。空输入框不代表删除，只有确认 `Clear API key…` 后再 Apply 才会删除凭据。Model 下拉输入会实时进行大小写无关的 exact / prefix / substring / subsequence 模糊筛选；可滚动后鼠标或键盘选择并点击 `OK` 保存，也允许输入并保留自定义模型 ID。模型请求返回前输入的搜索词会继续应用到新列表。
+- `Fetch models` 与 `Test` 都会立即显示阶段状态并可再次点击取消；关闭 Profile 对话框也会取消其模型请求并清零临时密钥副本。`Test` 先获取模型列表；选择模型后再发起最多 8 token 的最小推理，未选择模型则停在列表阶段。该操作可能产生 Provider 请求或费用。
+- `Project Private`：选择仅当前 workspace 生效的模板/风格并清除未完成草稿。
+- `Project Providers`：定义仅当前 workspace 使用的 Provider Profile、活动 Profile 和 PasswordSafe 凭据；选择“使用全局 Profile”时回退到全局活动 Profile。
+- `Project Shared`：维护可随项目提交的附加指令、模板、风格和共享默认值。项目指令可选择继承、追加或替换全局附加指令，但不会替换内置结构化输出、事实、隐私与安全约束。
 
 “配置快捷键…”只打开 IntelliJ 公共 Keymap 设置并定位 Action，不会在运行时修改用户键位方案。复制 Profile 不复制 API 密钥；删除 Profile 会同步删除其 PasswordSafe 凭据。
+
+### ChatGPT / Codex Provider
+
+1. 安装 `codex-cli 0.144.5` 或更新版本。
+2. 在 `LLM Settings` 的 ChatGPT / Codex 区域填写 Codex 可执行文件路径；留空时使用 `PATH` 中的 `codex`，修改后先 Apply。
+3. 点击刷新检查安装与账户状态，再选择浏览器登录或设备码登录。登录、令牌保存/刷新和退出均由 Codex App Server 完成，EzCodeMarks 不读取 OAuth 令牌。
+4. 新建 `ChatGPT / Codex` Profile，使用 `Fetch models` 选择文本模型。该 Provider 不显示 Endpoint，也不需要 API Key。
+5. `Test` 仍会先读取模型，并在已选择模型时执行最多 8 token 的最小推理；它可能使用 ChatGPT 配额。
+
+EzCodeMarks 在 JetBrains 公共数据目录使用独立 Codex home，因此同一机器上的 EzCodeMarks JetBrains 产品共享一个 ChatGPT 账户，但不会复用普通 Codex CLI 或 VS Code 的账户。退出会影响所有这些 EzCodeMarks 实例，并使既有源码上下文同意失效。
+
+每次生成使用新的临时结构化线程：不加载项目指令文件，不持久化对话历史，不读取项目或用户 home，只允许读取空的隔离工作目录，并禁用模型网络、Shell、浏览器、MCP、Hook 和委派工具。隔离结果不匹配、出现未知工具事件、取消时尚未取得线程/Turn ID，都会终止该 App Server 进程并拒绝结果。
+
+### 全局同步与项目数据
+
+- 全局配置同时保存在 JetBrains common-data 原子快照和可漫游的 `TOOLS` 状态中，可覆盖同机跨产品与 Backup and Sync 场景。祖先版本自动收敛；分支冲突会在 `Git Commit Message` 设置页要求明确选择机器版本或同步版本。
+- 同步内容不包含 API Key、OAuth 令牌、账户邮箱、授权码、Codex 可执行文件、账户代次或源码同意。
+- 项目共享设置写入 `.idea/ezCodeMarkCommitMessage.xml`，可按团队策略纳入版本控制；项目私有 Profile、活动选择、草稿、凭据与源码同意仍留在 workspace/PasswordSafe。
 
 ### Provider 与隐私边界
 
 - OpenAI Compatible 使用 `/chat/completions` 与 `/models`，通过 Bearer 认证。
 - Anthropic 使用 `/v1/messages` 与 `/v1/models`，通过 `x-api-key` 认证。
+- ChatGPT / Codex 使用用户安装的 Codex CLI 稳定 App Server 协议；账户和令牌由独立 Codex home 管理，不进入插件状态。
 - API 密钥只保存在 IntelliJ PasswordSafe，不会写入插件 XML、项目 workspace 或 `.codemark`。
 - 每个 Profile 第一次向当前 Provider 类型与 Endpoint 发送源码上下文时，必须确认数据共享；Endpoint、Provider 或隐私策略变化后会再次确认。
 - 上下文会过滤二进制、生成文件、`.env*`、凭据、token、私钥、证书、SSH、service-account、Docker/Kubernetes 认证文件等敏感路径或内容。
 - 状态、diff、未版本化文本和最近提交均有固定预算；v1 不提供关闭敏感过滤或突破预算的开关。
 - 请求遵循 IDE Proxy，支持取消；单次操作最多调用 Provider 三次，只对明确的 streaming/reasoning 参数不兼容或结构化 JSON 修复做受控回退。
+- Velocity 仅允许结构化字段、局部变量和 `trim/lower/truncate` 字符串 helper；文件加载、`#parse/#include/#evaluate/#foreach`、任意成员访问、范围与超长模板/输出会被拒绝。
 
-项目模板 ID 与未完成草稿保存在 IDE workspace state，不会进入 CodeMark 数据文件。
+项目私有模板/风格选择、Profile、未完成草稿和源码同意保存在 IDE workspace state，不会进入 CodeMark 数据文件；项目共享模板、风格、附加指令和默认值保存在 `.idea/ezCodeMarkCommitMessage.xml`。
 
 ---
 

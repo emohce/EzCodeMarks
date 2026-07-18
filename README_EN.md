@@ -16,10 +16,11 @@ An IntelliJ IDEA plugin for structured code bookmarks and assisted Git commit au
 ### Git commit message assistant
 
 - Compose structured messages with `type`, `scope`, `subject`, `body`, `BREAKING CHANGE`, `Closes`, and `skip ci`.
-- Generate from included Git changes, add extra requirements, format an existing draft, or use Smart Echo.
-- Review and edit every AI result before applying it; cancellation, failure, and validation errors preserve the original message.
-- Manage Velocity templates, commit types, and multiple OpenAI Compatible or Anthropic provider profiles.
-- Keep API keys in IntelliJ PasswordSafe and gate filtered, size-limited source context behind per-endpoint consent.
+- Generate from included Git changes, or optimize only the current commit text with an optional one-off instruction and no Git diff collection.
+- Apply validated AI results directly by default, with an optional review-before-write setting; cancellation, failure, and validation errors preserve the original message.
+- In review-before-write mode, refine the result again with AI, optionally optimize the one-off instruction, confirm the exact SYSTEM/USER prompts, and inspect the complete in-session refinement history.
+- Manage Velocity templates, commit types, Standard/Concise/custom commit styles, and multiple OpenAI Compatible, Anthropic, or ChatGPT/Codex provider profiles.
+- Keep API keys in IntelliJ PasswordSafe, leave ChatGPT login and tokens entirely to the user-installed Codex CLI, and gate filtered, size-limited source context behind consent.
 - Use English, Simplified Chinese, Japanese, or Korean Action, settings, validation, and error resources.
 
 ## Requirements
@@ -29,6 +30,7 @@ An IntelliJ IDEA plugin for structured code bookmarks and assisted Git commit au
 - Kotlin 2.4.0
 - IntelliJ Platform Gradle Plugin 2.16.0
 - Git4Idea (bundled with the IDE)
+- Optional: `codex-cli 0.144.5+` for the ChatGPT/Codex provider
 
 ## Development and Installation
 
@@ -53,20 +55,30 @@ Four stable Actions are registered in the commit-message area and the Keymap gro
 | Action | Shown by default | Windows / Linux | macOS |
 | --- | --- | --- | --- |
 | Create Commit Message | Yes | `Ctrl+Alt+Shift+M` | `⌘⌥⇧M` |
-| Generate Commit Message | Yes | `Ctrl+Alt+Shift+G` | `⌘⌥⇧G` |
+| Generate Commit Message | Yes | `Ctrl+Alt+X` | `⌃⌥X` |
 | Generate With Additional Requirements | Yes | Unassigned | Unassigned |
 | Format Commit Message | No | Unassigned | Unassigned |
 
 Toolbar visibility only affects the Commit Message place. Hidden Actions remain available from their shortcuts and Find Action. A running Action changes to a cancel icon and can be triggered again to cancel; its three siblings are temporarily disabled for the same commit document.
 
+`Format Commit Message` first accepts an optional one-off optimization instruction. Blank input uses the current Commit Style and Cancel sends no request. Format sends only the current commit text, template, style, and one-off instruction; it does not read or send Git status, diff, unversioned files, revision, or recent commits.
+
+With review-before-write enabled, choose `Refine with AI…` on the result page. Each accepted operation keeps the first Commit, initial AI result, current final result, before/after text, entered instruction, AI-optimized instruction, user-confirmed instruction, and confirmed prompt envelopes. `History` can inspect or copy the complete record. This history exists only for the current preview session and is never written to plugin XML, workspace state, `.codemark`, logs, or analytics. A refinement sends only the current result, confirmed instruction, template, and style—never the first Commit or Git context—and shares a maximum of three Provider requests.
+
+`Select Commit Style` is available through Find Action, Keymap, and `Tools | EzCodeMarks | Git Commit Message`. It has no default shortcut and does not occupy the commit toolbar.
+
 Configuration is under `Settings | Tools | EzCodeMarks | Git Commit Message`:
 
-- `Git Commit Message`: toolbar visibility, current Keymap/conflicts, field visibility, type display, skip-ci, and Smart Echo.
-- `Templates & Types`: template lifecycle, global default, Velocity validation/live preview, and ordered type descriptions.
-- `AI Providers`: active profile, protocol, endpoint, model, temperature, language, streaming, reasoning compatibility, connection testing, and model discovery.
-- `Project Defaults`: project template override, global-default restore, and unfinished-draft clearing.
+- `Git Commit Message`: toolbar visibility, current Keymap/conflicts, field visibility, type display, skip-ci, optional review before AI writeback, and cross-product global extra instructions/conflict resolution.
+- `Commit Template`: upstream-aligned Template / Type / Style tabs with template and type management, safe Velocity validation/live preview, style preview, and AI-generated prompts/templates from a natural-language style description.
+- `LLM Settings`: an upstream-aligned active-model/global-options header, Profile table, and Profile dialog. The API-key field is full-width and session-retained; the editable model selector performs live fuzzy filtering; Fetch models and Test are cancellable and expose staged status. This page also configures the Codex executable, browser/device-code sign-in, account refresh, and shared-machine logout.
+- `Project Private`: workspace-only template/style selection and unfinished drafts.
+- `Project Providers`: workspace-only profiles, active selection, and PasswordSafe credentials, with safe fallback to the global active profile.
+- `Project Shared`: VCS-eligible extra instructions, templates, styles, and shared defaults. Project instructions can inherit, append to, or replace global extra instructions.
 
-When no AI profile is configured, the Actions provide a recoverable link to provider settings. Project drafts and template overrides use IDE workspace state and never enter `.codemark`.
+`Test` first lists models, then performs a minimal inference capped at 8 output tokens only when a model is selected. With a blank model it stops after discovery and asks for a selection. The UI clearly warns that the operation can make billable Provider requests.
+
+When no AI profile is configured, the Actions provide a recoverable link to the relevant provider settings. ChatGPT/Codex profiles use no API key: EzCodeMarks talks to the official stable App Server in a dedicated Codex home and creates a fresh structured thread with no history, project instructions, project/home filesystem access, or network-capable model tools.
 
 ## CodeMarks Quick Start
 
@@ -94,9 +106,9 @@ The bookmark feature keeps its existing Repository, ViewModel, SelectionBus, and
 | Data | State, PasswordSafe, Velocity, provider HTTP, Git context, coordination | [CommitMessageAiService.kt](src/main/kotlin/emohce/data/commitmessage/CommitMessageAiService.kt#L22) |
 | Presentation | VCS Actions, commit-context adapter, dialogs, settings, bundles | [CommitMessageActions.kt](src/main/kotlin/emohce/presentation/commitmessage/action/CommitMessageActions.kt#L42) |
 
-The commit assistant does not use the Bookmark ToolWindow, BookmarkViewModel, SelectionBus, or `.codemark`. Application preferences use IDE configuration storage, project template/draft state uses workspace storage, and API keys are stored only by PasswordSafe.
+The commit assistant does not use the Bookmark ToolWindow, BookmarkViewModel, SelectionBus, or `.codemark`. Global settings use both an atomic JetBrains common-data snapshot and roamable `TOOLS` state; divergent branches require explicit resolution. Shared project definitions use `.idea/ezCodeMarkCommitMessage.xml`, while private profiles, selections, drafts, and consent remain in workspace state. API keys stay in PasswordSafe. The Codex path, account generation, and dedicated home are machine-local, and OAuth tokens remain owned by Codex.
 
-Provider traffic honors the IDE proxy, uses a 15-second connection timeout and a cancellable 120-second read limit. Git context filters binary/generated files plus `.env*`, credentials, keys, certificates, SSH, service-account, and secret paths/content. Version 1 has no bypass.
+OpenAI Compatible and Anthropic traffic honors the IDE proxy, uses a 15-second connection timeout and a cancellable 120-second read limit; the isolated Codex App Server owns ChatGPT transport. Git context filters binary/generated files plus `.env*`, credentials, keys, certificates, SSH, service-account, and secret paths/content. Version 1 has no bypass. ChatGPT login, account replacement, and logout invalidate prior source-context consent.
 
 ## Verification
 
@@ -108,7 +120,7 @@ Provider traffic honors the IDE proxy, uses a 15-second connection timeout and a
 ./gradlew verifyPlugin
 ```
 
-Tests cover structured parsing/rendering, Velocity, state migration, the PasswordSafe boundary, context filtering/caps, providers/SSE/cancellation/fallbacks, and Action, shortcut, DataKey, and settings lifecycles.
+Tests cover structured parsing/rendering, Velocity, dual-carrier synchronization/conflicts, shared/private project state, PasswordSafe, Codex App Server isolation/cancellation/tool rejection, context filtering/caps, provider SSE/fallbacks, and Action, shortcut, DataKey, and settings lifecycles.
 
 ## Documentation
 
@@ -120,6 +132,6 @@ Tests cover structured parsing/rendering, Velocity, state migration, the Passwor
 
 ## License and Attribution
 
-This project is licensed under the terms in [LICENSE](LICENSE).
+This project is licensed under the terms in [LICENSE](LICENSE). Third-party text attribution is documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The CodeMarks feature draws inspiration from [CodeTour](https://github.com/LefterisXris/CodeTour) and [Bookmark-X](https://github.com/Nonoas/Bookmark-X). The commit assistant is a behavior-level redesign inspired by the Apache-2.0 [Git Commit Message Helper](https://github.com/AutismSuperman/git-commit-message-helper), implemented independently for the current EzCodeMarks Kotlin/JDK 21/IntelliJ 2025.3 architecture. Its Swing `.form`, reflection, raw Git/HTTP, and plaintext-secret implementation were not copied.
+The CodeMarks feature draws inspiration from [CodeTour](https://github.com/LefterisXris/CodeTour) and [Bookmark-X](https://github.com/Nonoas/Bookmark-X). The commit assistant is an architectural rewrite inspired by the Apache-2.0 [Git Commit Message Helper](https://github.com/AutismSuperman/git-commit-message-helper). Adapted default Velocity template text and commit-type descriptions retain the upstream Apache-2.0 license in the distribution; its Swing `.form`, reflection, raw Git/HTTP, and plaintext-secret implementation were not copied.
