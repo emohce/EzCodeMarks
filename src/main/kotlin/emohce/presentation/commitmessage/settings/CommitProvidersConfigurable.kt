@@ -1,94 +1,210 @@
 package emohce.presentation.commitmessage.settings
 
+import com.intellij.icons.AllIcons
+import com.intellij.ide.BrowserUtil
+import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.options.SearchableConfigurable
-import com.intellij.openapi.progress.EmptyProgressIndicator
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
+import com.intellij.ui.JBColor
+import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBCheckBox
-import com.intellij.ui.components.JBList
-import com.intellij.ui.components.JBPasswordField
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.panel
-import emohce.data.commitmessage.CommitMessageSecretStore
+import com.intellij.ui.table.JBTable
+import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import emohce.data.commitmessage.CommitMessageCredentialAccess
+import emohce.data.commitmessage.CommitMessageSecretStore
+import emohce.data.commitmessage.CommitMessageSettingsConflictException
 import emohce.data.commitmessage.CommitMessageSettingsService
+import emohce.data.commitmessage.CodexAppServerErrorKind
+import emohce.data.commitmessage.CodexAppServerException
+import emohce.data.commitmessage.CodexAppServerService
+import emohce.data.commitmessage.CodexAccountSettingsGateway
+import emohce.data.commitmessage.CodexInstallationStatus
+import emohce.data.commitmessage.CodexInstallationProblem
+import emohce.data.commitmessage.DefaultLlmProviderClient
 import emohce.data.commitmessage.HttpLlmProviderClient
+import emohce.data.commitmessage.LlmProviderClient
+import emohce.data.commitmessage.MissingApiKeyException
 import emohce.data.commitmessage.SourceContextConsent
+import emohce.data.commitmessage.StaleProviderProfileException
+import emohce.data.commitmessage.hasSameCredentialDestination
+import emohce.domain.commitmessage.LlmCompletionRequest
 import emohce.domain.commitmessage.LlmProfile
 import emohce.domain.commitmessage.LlmProviderType
+import emohce.domain.commitmessage.ProviderErrorKind
+import emohce.domain.commitmessage.ProviderErrorSanitizer
+import emohce.domain.commitmessage.ProviderException
 import emohce.domain.commitmessage.ProviderRequestBudget
 import emohce.presentation.commitmessage.CommitMessageBundle
-import java.awt.GridLayout
-import java.util.UUID
 import java.net.URI
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import org.jetbrains.annotations.TestOnly
 import javax.swing.DefaultComboBoxModel
 import javax.swing.DefaultListCellRenderer
-import javax.swing.DefaultListModel
-import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JList
-import javax.swing.JPanel
+import javax.swing.JSpinner
 import javax.swing.ListSelectionModel
-import java.util.concurrent.atomic.AtomicReference
+import javax.swing.SpinnerNumberModel
+import javax.swing.table.AbstractTableModel
 
-class CommitProvidersConfigurable(
+internal fun interface ProviderSettingsRequestRunner {
+    fun run(title: String, operation: (ProgressIndicator) -> Unit)
+}
+
+private val DEFAULT_PROVIDER_SETTINGS_REQUEST_RUNNER = ProviderSettingsRequestRunner { title, operation ->
+    ProgressManager.getInstance().run(object : Task.Backgroundable(null, title, true) {
+        override fun run(indicator: ProgressIndicator) = operation(indicator)
+    })
+}
+
+internal class CommitProvidersConfigurable(
     private val secretStore: CommitMessageSecretStore = CommitMessageSecretStore(),
+    private val providerClient: LlmProviderClient = DefaultLlmProviderClient(),
+    private val requestRunner: ProviderSettingsRequestRunner = DEFAULT_PROVIDER_SETTINGS_REQUEST_RUNNER,
+    private val confirmApiKeyClear: () -> Boolean = {
+        Messages.showYesNoDialog(
+            CommitMessageBundle.message("settings.providers.clearApiKey.confirm"),
+            CommitMessageBundle.message("settings.providers.clearApiKey"),
+            Messages.getQuestionIcon(),
+        ) == Messages.YES
+    },
+    private val notifyMissingApiKey: () -> Unit = {
+        Messages.showWarningDialog(
+            CommitMessageBundle.message("error.apiKey.missing"),
+            CommitMessageBundle.message("settings.providers.title"),
+        )
+    },
+    private val profileEditor: ProviderProfileEditor = DEFAULT_PROVIDER_PROFILE_EDITOR,
+    private val codexGateway: CodexAccountSettingsGateway = CodexAppServerService.getInstance(),
+    private val openCodexUrl: (String) -> Unit = BrowserUtil::browse,
+    private val showCodexDeviceCode: (String) -> Unit = { code ->
+        Messages.showInfoMessage(
+            CommitMessageBundle.message("settings.providers.codex.deviceCode", code),
+            CommitMessageBundle.message("settings.providers.codex.group"),
+        )
+    },
+    private val confirmCodexLogout: () -> Boolean = {
+        Messages.showYesNoDialog(
+            CommitMessageBundle.message("settings.providers.codex.logoutConfirm"),
+            CommitMessageBundle.message("settings.providers.codex.group"),
+            Messages.getQuestionIcon(),
+        ) == Messages.YES
+    },
 ) : SearchableConfigurable {
     private var profiles = mutableListOf<LlmProfile>()
     private var activeProfileId = ""
-    private var selectedIndex = -1
+    private var displayedProfileId = ""
     private var loading = false
-    private var connectionRequestGeneration = 0L
     private val removedProfileIds = linkedSetOf<String>()
-    private val pendingKeys = linkedMapOf<String, CharArray>()
-    private val profileModel = DefaultListModel<LlmProfile>()
-    private val profileList = JBList(profileModel).apply {
-        selectionMode = ListSelectionModel.SINGLE_SELECTION
-        cellRenderer = object : DefaultListCellRenderer() {
+    private val sessionKeys = linkedMapOf<String, CharArray>()
+    private val dirtyKeyIds = linkedSetOf<String>()
+    private val clearedKeyIds = linkedSetOf<String>()
+    private val fetchedModels = linkedMapOf<String, List<String>>()
+    private var testRunning = false
+    private var loadedProviderFields = ProviderFields()
+    private var loadedCodexExecutable = ""
+    private val currentConnectionTest = AtomicReference<ConnectionTestHandle?>()
+
+    private val tableModel = ProfileTableModel()
+    private val profileTable = JBTable(tableModel).apply {
+        setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        setShowGrid(true)
+        emptyText.text = CommitMessageBundle.message("settings.providers.empty")
+        accessibleContext.accessibleName = CommitMessageBundle.message("settings.providers.list")
+    }
+    private val activeProfileCombo = ComboBox<ProfileChoice>().apply {
+        renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
                 list: JList<*>?, value: Any?, index: Int, selected: Boolean, focused: Boolean,
             ): java.awt.Component = super.getListCellRendererComponent(list, value, index, selected, focused).also {
-                (it as JLabel).text = (value as? LlmProfile)?.name.orEmpty()
+                val choice = value as? ProfileChoice
+                (it as JLabel).text = choice?.label.orEmpty()
             }
         }
     }
-    private val activeProfileCombo = ComboBox<ProfileChoice>()
-    private val profileNameField = JBTextField()
-    private val providerCombo = ComboBox(
-        arrayOf(
-            ProviderChoice(
-                LlmProviderType.OPENAI_COMPATIBLE,
-                CommitMessageBundle.message("provider.openaiCompatible"),
-            ),
-            ProviderChoice(LlmProviderType.ANTHROPIC, CommitMessageBundle.message("provider.anthropic")),
-        ),
-    )
-    private val endpointField = JBTextField()
-    private val apiKeyField = JBPasswordField()
-    private val modelField = JBTextField()
-    private val temperatureField = JBTextField()
-    private val languageField = JBTextField()
+    private val temperatureSpinner = JSpinner(SpinnerNumberModel(0.5, 0.0, 2.0, 0.1)).apply {
+        (editor as? JSpinner.NumberEditor)?.format?.apply {
+            minimumFractionDigits = 1
+            maximumFractionDigits = 1
+        }
+        preferredSize = preferredSize.apply { width = JBUI.scale(110) }
+    }
+    private val responseLanguageField = JBTextField("English").apply {
+        preferredSize = preferredSize.apply { width = JBUI.scale(220) }
+    }
+    private val smartEchoField = JBCheckBox(CommitMessageBundle.message("settings.providers.smartEcho"))
     private val streamingField = JBCheckBox(CommitMessageBundle.message("settings.providers.streaming"))
     private val reasoningField = JBCheckBox(CommitMessageBundle.message("settings.providers.reasoning"))
+    private val testConnectionButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.test"))
+    private val connectionStatusLabel = JBLabel().apply {
+        foreground = UIUtil.getContextHelpForeground()
+    }
+    private val connectionCostHint = JBLabel(CommitMessageBundle.message("settings.providers.testCostHint")).apply {
+        foreground = UIUtil.getContextHelpForeground()
+    }
+    private val codexExecutableField = JBTextField().apply { columns = 42 }
+    private val codexAccountStatus = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
+    private val codexRefreshButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.codex.refresh"))
+    private val codexSignInButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.codex.signIn"))
+    private val codexDeviceButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.codex.deviceSignIn"))
+    private val codexLogoutButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.codex.logout"))
+    private val codexRequestGeneration = AtomicLong()
+    private val currentCodexRequest = AtomicReference<CodexRequestHandle?>()
+    private val codexRequestLock = Any()
+    @Volatile
+    private var codexSignedIn = false
+    @Volatile
+    private var settingsDisposed = false
     private var root: JComponent? = null
 
     init {
-        profileList.addListSelectionListener {
-            if (!it.valueIsAdjusting && !loading) {
-                connectionRequestGeneration++
-                saveSelectedProfile()
-                selectedIndex = profileList.selectedIndex
-                loadSelectedProfile()
-            }
-        }
         activeProfileCombo.addActionListener {
-            if (!loading) activeProfileId = (activeProfileCombo.selectedItem as? ProfileChoice)?.id.orEmpty()
+            if (loading) return@addActionListener
+            cancelConnectionTest(showCancelled = false)
+            commitDisplayedReasoning()
+            activeProfileId = (activeProfileCombo.selectedItem as? ProfileChoice)?.id.orEmpty()
+            displayedProfileId = activeProfileId
+            selectActiveProfileRow()
+            loadReasoningForActiveProfile()
         }
+        profileTable.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(event: java.awt.event.MouseEvent) {
+                if (event.clickCount != 2 || event.button != java.awt.event.MouseEvent.BUTTON1) return
+                val viewRow = profileTable.rowAtPoint(event.point)
+                if (viewRow < 0) return
+                profileTable.setRowSelectionInterval(viewRow, viewRow)
+                editSelectedProfile()
+                event.consume()
+            }
+        })
+        reasoningField.addActionListener {
+            if (!loading) commitDisplayedReasoning()
+        }
+        testConnectionButton.addActionListener {
+            if (testRunning) cancelConnectionTest() else testConnection()
+        }
+        codexRefreshButton.addActionListener { refreshCodexAccount() }
+        codexSignInButton.addActionListener { startCodexLogin(deviceCode = false) }
+        codexDeviceButton.addActionListener { startCodexLogin(deviceCode = true) }
+        codexLogoutButton.addActionListener { logoutCodexAccount() }
     }
 
     override fun getId(): String = ID
@@ -96,109 +212,138 @@ class CommitProvidersConfigurable(
     override fun getDisplayName(): String = CommitMessageBundle.message("settings.providers.title")
 
     override fun createComponent(): JComponent {
+        root?.let { return it }
+        settingsDisposed = false
         reset()
+        val tablePanel = ToolbarDecorator.createDecorator(profileTable)
+            .setAddAction { addProfile() }
+            .setRemoveAction { removeSelectedProfile() }
+            .setEditAction { editSelectedProfile() }
+            .disableUpDownActions()
+            .addExtraAction(object : DumbAwareAction(
+                CommitMessageBundle.message("settings.providers.copy"),
+                null,
+                AllIcons.Actions.Copy,
+            ) {
+                override fun actionPerformed(event: AnActionEvent) = copySelectedProfile()
+            })
+            .createPanel()
+        configureTableColumns()
+
         return panel {
+            group(CommitMessageBundle.message("settings.providers.codex.group")) {
+                row(CommitMessageBundle.message("settings.providers.codex.executable")) {
+                    cell(codexExecutableField).align(Align.FILL).resizableColumn()
+                    cell(codexRefreshButton)
+                }
+                row(CommitMessageBundle.message("settings.providers.codex.account")) {
+                    cell(codexAccountStatus).align(Align.FILL).resizableColumn()
+                    cell(codexSignInButton)
+                    cell(codexDeviceButton)
+                    cell(codexLogoutButton)
+                }
+            }
             row(CommitMessageBundle.message("settings.providers.active")) {
-                cell(activeProfileCombo).align(Align.FILL)
+                cell(activeProfileCombo).align(Align.FILL).resizableColumn()
             }
             row {
-                scrollCell(profileList).align(Align.FILL)
-                cell(buttons(
-                    JButton(CommitMessageBundle.message("settings.providers.add")).apply {
-                        addActionListener { addProfile() }
-                    },
-                    JButton(CommitMessageBundle.message("settings.providers.copy")).apply {
-                        addActionListener { copyProfile() }
-                    },
-                    JButton(CommitMessageBundle.message("settings.providers.delete")).apply {
-                        addActionListener { deleteProfile() }
-                    },
-                ))
-            }.resizableRow()
-            group(CommitMessageBundle.message("settings.providers.details")) {
-                row(CommitMessageBundle.message("settings.providers.name")) {
-                    cell(profileNameField).align(Align.FILL)
-                }
-                row(CommitMessageBundle.message("settings.providers.provider")) {
-                    cell(providerCombo).align(Align.FILL)
-                }
-                row(CommitMessageBundle.message("settings.providers.endpoint")) {
-                    cell(endpointField).align(Align.FILL)
-                }
-                row(CommitMessageBundle.message("settings.providers.apiKey")) {
-                    cell(apiKeyField).align(Align.FILL)
-                    comment(CommitMessageBundle.message("settings.providers.saved"))
-                }
-                row(CommitMessageBundle.message("settings.providers.model")) {
-                    cell(modelField).align(Align.FILL)
-                }
-                row(CommitMessageBundle.message("settings.providers.temperature")) {
-                    cell(temperatureField)
-                }
-                row(CommitMessageBundle.message("settings.providers.language")) {
-                    cell(languageField).align(Align.FILL)
-                }
-                row { cell(streamingField); cell(reasoningField) }
-                row {
-                    button(CommitMessageBundle.message("settings.providers.test")) { testConnection(false) }
-                    button(CommitMessageBundle.message("settings.providers.fetchModels")) { testConnection(true) }
-                }
+                label(CommitMessageBundle.message("settings.providers.temperature"))
+                cell(temperatureSpinner)
+                label(CommitMessageBundle.message("settings.providers.language"))
+                cell(responseLanguageField).align(Align.FILL).resizableColumn()
             }
+            row {
+                cell(smartEchoField)
+                cell(streamingField)
+                cell(reasoningField)
+                cell(testConnectionButton)
+                cell(connectionStatusLabel).align(Align.FILL).resizableColumn()
+            }
+            row { cell(connectionCostHint).align(Align.FILL) }
+            row {
+                cell(tablePanel).align(Align.FILL).resizableColumn()
+            }.resizableRow()
+        }.apply {
+            preferredSize = preferredSize.apply { height = JBUI.scale(620) }
         }.also { root = it }
     }
 
     override fun isModified(): Boolean {
-        saveSelectedProfile()
-        val state = CommitMessageSettingsService.getInstance().state
-        return profiles != state.profiles || activeProfileId != state.activeProfileId ||
-            pendingKeys.isNotEmpty() || removedProfileIds.isNotEmpty()
+        return workingProviderFields() != loadedProviderFields ||
+            codexExecutableField.text.trim() != loadedCodexExecutable ||
+            dirtyKeyIds.isNotEmpty() || clearedKeyIds.isNotEmpty() || removedProfileIds.isNotEmpty()
     }
 
     override fun apply() {
-        saveSelectedProfile()
-        if (profiles.any { it.name.isBlank() || !isSafeEndpoint(it.baseUrl) } ||
-            profiles.map { it.id }.toSet().size != profiles.size
+        val selectedProfileId = selectedProfile()?.id
+        cancelConnectionTest(showCancelled = false)
+        cancelCodexRequest()
+        commitDisplayedReasoning()
+        val snapshot = profiles.map { it.copy() }.toMutableList()
+        if (snapshot.any {
+                it.name.isBlank() ||
+                    it.id.startsWith("project:") ||
+                    (it.provider != LlmProviderType.CHATGPT_CODEX && !isSafeEndpoint(it.baseUrl))
+            } ||
+            snapshot.map { it.id }.toSet().size != snapshot.size
         ) {
             throw ConfigurationException(CommitMessageBundle.message("settings.providers.validation"))
         }
         val service = CommitMessageSettingsService.getInstance()
-        val merged = service.state.deepCopy().apply {
-            profiles = this@CommitProvidersConfigurable.profiles.map { it.copy() }.toMutableList()
-            activeProfileId = this@CommitProvidersConfigurable.activeProfileId
+        val current = service.snapshot()
+        val workingFields = workingProviderFields()
+        if (service.hasPortableConflict() ||
+            (providerFields(current) != loadedProviderFields && providerFields(current) != workingFields)
+        ) {
+            throw ConfigurationException(CommitMessageBundle.message("settings.portable.concurrentChange"))
         }
-        val keyWrites = pendingKeys.mapValues { it.value.copyOf() }
-        val keyDeletes = removedProfileIds.toList()
+        val currentExecutable = codexGateway.executablePath()
+        if (currentExecutable != loadedCodexExecutable && currentExecutable != codexExecutableField.text.trim()) {
+            throw ConfigurationException(CommitMessageBundle.message("settings.providers.concurrentChange"))
+        }
+        val merged = current.apply {
+            profiles = snapshot
+            activeProfileId = this@CommitProvidersConfigurable.activeProfileId
+            llmTemperature = temperatureValue()
+            llmResponseLanguage = responseLanguage()
+            smartEcho = smartEchoField.isSelected
+            llmStreaming = streamingField.isSelected
+        }
+        val keyWrites = dirtyKeyIds
+            .filterNot(clearedKeyIds::contains)
+            .mapNotNull { id -> sessionKeys[id]?.copyOf()?.let { id to it } }
+            .toMap()
+        val keyDeletes = (removedProfileIds + clearedKeyIds).distinct()
+        val requestedExecutable = codexExecutableField.text.trim()
         val failure = AtomicReference<Throwable?>()
         val completed = ProgressManager.getInstance().runProcessWithProgressSynchronously(
             Runnable {
-                val store = secretStore
+                var executableUpdated = false
                 try {
-                    CommitMessageCredentialAccess.write {
+                    codexGateway.setExecutablePath(requestedExecutable, currentExecutable)
+                    executableUpdated = requestedExecutable != currentExecutable
+                    CommitMessageCredentialAccess.transaction {
                         val affected = (keyDeletes + keyWrites.keys).distinct()
-                        val originals = affected.associateWith(store::getApiKey)
+                        val originals = affected.associateWith(secretStore::getCredentials)
                         try {
-                            keyDeletes.forEach(store::clearApiKey)
-                            keyWrites.forEach { (id, value) -> store.setApiKey(id, value) }
+                            keyDeletes.forEach(secretStore::clearApiKey)
+                            keyWrites.forEach { (id, value) -> secretStore.setApiKey(id, value) }
                             service.replaceState(merged)
                         } catch (error: Throwable) {
-                            runCatching {
-                                originals.forEach { (id, value) ->
-                                    if (value == null) {
-                                        store.clearApiKey(id)
-                                    } else {
-                                        val chars = value.toCharArray()
-                                        try {
-                                            store.setApiKey(id, chars)
-                                        } finally {
-                                            chars.fill('\u0000')
-                                        }
-                                    }
-                                }
-                            }.exceptionOrNull()?.let(error::addSuppressed)
+                            originals.forEach { (id, value) ->
+                                runCatching { secretStore.restoreCredentials(id, value) }
+                                    .exceptionOrNull()
+                                    ?.let(error::addSuppressed)
+                            }
                             throw error
                         }
                     }
                 } catch (error: Throwable) {
+                    if (executableUpdated) {
+                        runCatching {
+                            codexGateway.setExecutablePath(currentExecutable, requestedExecutable)
+                        }.exceptionOrNull()?.let(error::addSuppressed)
+                    }
                     failure.set(error)
                 } finally {
                     keyWrites.values.forEach { it.fill('\u0000') }
@@ -209,237 +354,668 @@ class CommitProvidersConfigurable(
             null,
         )
         if (!completed || failure.get() != null) {
+            if (failure.get() is CommitMessageSettingsConflictException) {
+                throw ConfigurationException(CommitMessageBundle.message("settings.portable.concurrentChange"))
+            }
             throw ConfigurationException(
                 CommitMessageBundle.message("error.credentials.save"),
                 failure.get(),
                 CommitMessageBundle.message("settings.providers.title"),
             )
         }
-        clearPendingKeys()
+        loadedCodexExecutable = codexGateway.executablePath()
+        codexExecutableField.text = loadedCodexExecutable
+
+        dirtyKeyIds.clear()
+        clearedKeyIds.clear()
         removedProfileIds.clear()
-        reset()
+        loadAppliedState(service, selectedProfileId)
     }
 
     override fun reset() {
-        connectionRequestGeneration++
-        clearPendingKeys()
+        cancelConnectionTest(showCancelled = false)
+        cancelCodexRequest()
+        clearSessionKeys()
+        dirtyKeyIds.clear()
+        clearedKeyIds.clear()
         removedProfileIds.clear()
-        val state = CommitMessageSettingsService.getInstance().state
-        profiles = state.profiles.map { it.copy() }.toMutableList()
-        activeProfileId = state.activeProfileId
-        rebuildModels()
+        fetchedModels.clear()
+        loadedCodexExecutable = codexGateway.executablePath()
+        codexExecutableField.text = loadedCodexExecutable
+        codexAccountStatus.text = CommitMessageBundle.message("settings.providers.codex.notChecked")
+        codexSignedIn = false
+        setCodexButtons(running = false, signedIn = false)
+        loadAppliedState(CommitMessageSettingsService.getInstance())
     }
 
     override fun disposeUIResources() {
-        connectionRequestGeneration++
-        clearPendingKeys()
-        val password = apiKeyField.password
-        try {
-            apiKeyField.text = ""
-        } finally {
-            password.fill('\u0000')
-        }
+        settingsDisposed = true
+        cancelConnectionTest(showCancelled = false)
+        cancelCodexRequest()
+        clearSessionKeys()
+        dirtyKeyIds.clear()
+        clearedKeyIds.clear()
+        removedProfileIds.clear()
+        fetchedModels.clear()
         root = null
     }
 
-    private fun rebuildModels() {
+    @TestOnly
+    internal fun editProfileForTest(profileId: String) {
+        cancelConnectionTest(showCancelled = false)
+        commitDisplayedReasoning()
+        profiles.firstOrNull { it.id == profileId }?.copy()?.let { editProfile(it, isNew = false) }
+    }
+
+    private fun loadAppliedState(service: CommitMessageSettingsService, preferredProfileId: String? = null) {
+        val state = service.snapshot()
         loading = true
-        profileModel.clear()
-        profiles.forEach(profileModel::addElement)
-        refreshActiveChoices()
-        selectedIndex = if (profiles.isEmpty()) -1 else 0
-        profileList.selectedIndex = selectedIndex
-        loadSelectedProfile()
-        loading = false
+        try {
+            profiles = state.profiles.map { it.copy() }.toMutableList()
+            activeProfileId = state.activeProfileId
+            displayedProfileId = activeProfileId
+            temperatureSpinner.value = state.llmTemperature
+            responseLanguageField.text = state.llmResponseLanguage
+            smartEchoField.isSelected = state.smartEcho
+            streamingField.isSelected = state.llmStreaming
+            refreshActiveChoices()
+            tableModel.fireTableDataChanged()
+            val selectedId = preferredProfileId?.takeIf { id -> profiles.any { it.id == id } } ?: activeProfileId
+            selectProfileRow(selectedId)
+            loadReasoningForActiveProfile()
+            resetConnectionStatus()
+            loadedProviderFields = providerFields(state)
+        } finally {
+            loading = false
+        }
     }
 
     private fun refreshActiveChoices() {
-        val choices = profiles.map { ProfileChoice(it.id, it.name) }.toTypedArray()
+        val choices = profiles.map { profile ->
+            ProfileChoice(profile.id, "${profile.name} (${providerLabel(profile.provider)})")
+        }.toTypedArray()
         activeProfileCombo.model = DefaultComboBoxModel(choices)
-        activeProfileCombo.selectedItem = choices.firstOrNull { it.id == activeProfileId }
-            ?: choices.firstOrNull()
-        if (activeProfileId.isBlank()) activeProfileId = choices.firstOrNull()?.id.orEmpty()
+        val selected = choices.firstOrNull { it.id == activeProfileId } ?: choices.firstOrNull()
+        activeProfileCombo.selectedItem = selected
+        activeProfileId = selected?.id.orEmpty()
+        displayedProfileId = activeProfileId
     }
 
-    private fun loadSelectedProfile() {
-        loading = true
-        val profile = profiles.getOrNull(selectedIndex)
-        profileNameField.text = profile?.name.orEmpty()
-        providerCombo.selectedItem = profile?.let {
-            (0 until providerCombo.itemCount).map(providerCombo::getItemAt).firstOrNull { item -> item.type == it.provider }
-        }
-        endpointField.text = profile?.baseUrl.orEmpty()
-        apiKeyField.text = ""
-        modelField.text = profile?.model.orEmpty()
-        temperatureField.text = profile?.temperature?.toString().orEmpty()
-        languageField.text = profile?.responseLanguage.orEmpty()
-        streamingField.isSelected = profile?.streaming ?: true
-        reasoningField.isSelected = profile?.reasoningCompatibility ?: false
-        val enabled = profile != null
-        listOf(
-            profileNameField,
-            providerCombo,
-            endpointField,
-            apiKeyField,
-            modelField,
-            temperatureField,
-            languageField,
-            streamingField,
-            reasoningField,
-        ).forEach { it.isEnabled = enabled }
-        loading = false
+    private fun loadReasoningForActiveProfile() {
+        val active = profiles.firstOrNull { it.id == activeProfileId }
+        reasoningField.isEnabled = active != null && active.provider != LlmProviderType.CHATGPT_CODEX
+        reasoningField.isSelected = active?.reasoningCompatibility == true && active.provider != LlmProviderType.CHATGPT_CODEX
     }
 
-    private fun saveSelectedProfile() {
-        if (loading) return
-        val profile = profiles.getOrNull(selectedIndex) ?: return
-        val provider = (providerCombo.selectedItem as? ProviderChoice)?.type ?: profile.provider
-        val endpoint = endpointField.text.trim().trimEnd('/')
-        if (provider != profile.provider || endpoint != profile.baseUrl) SourceContextConsent.invalidate(profile)
-        profile.name = profileNameField.text.trim()
-        profile.provider = provider
-        profile.baseUrl = endpoint
-        profile.model = modelField.text.trim()
-        profile.temperature = temperatureField.text.toDoubleOrNull()?.coerceIn(0.0, 2.0) ?: profile.temperature
-        profile.responseLanguage = languageField.text.trim().ifBlank { "English" }
-        profile.streaming = streamingField.isSelected
-        profile.reasoningCompatibility = reasoningField.isSelected
-        val password = apiKeyField.password
-        try {
-            if (password.isNotEmpty()) {
-                pendingKeys.remove(profile.id)?.fill('\u0000')
-                pendingKeys[profile.id] = password.copyOf()
-                apiKeyField.text = ""
-            }
-        } finally {
-            password.fill('\u0000')
-        }
-        profileList.repaint()
+    private fun commitDisplayedReasoning() {
+        if (loading || displayedProfileId.isBlank()) return
+        profiles.firstOrNull { it.id == displayedProfileId }?.reasoningCompatibility = reasoningField.isSelected
     }
+
+    private fun profileSnapshot(): List<LlmProfile> = profiles.map { profile ->
+        if (profile.id == displayedProfileId) profile.copy(reasoningCompatibility = reasoningField.isSelected)
+        else profile.copy()
+    }
+
+    private fun workingProviderFields(): ProviderFields = ProviderFields(
+        profiles = profileSnapshot(),
+        activeProfileId = activeProfileId,
+        temperature = temperatureValue(),
+        responseLanguage = responseLanguage(),
+        smartEcho = smartEchoField.isSelected,
+        streaming = streamingField.isSelected,
+    )
+
+    private fun providerFields(state: emohce.data.commitmessage.CommitMessageSettingsState): ProviderFields = ProviderFields(
+        profiles = state.profiles.map { it.copy() },
+        activeProfileId = state.activeProfileId,
+        temperature = state.llmTemperature,
+        responseLanguage = state.llmResponseLanguage,
+        smartEcho = state.smartEcho,
+        streaming = state.llmStreaming,
+    )
 
     private fun addProfile() {
-        saveSelectedProfile()
-        val profile = LlmProfile(name = CommitMessageBundle.message("settings.providers.newName"))
-        val newIndex = profiles.size
+        cancelConnectionTest(showCancelled = false)
+        commitDisplayedReasoning()
+        val profile = LlmProfile(
+            id = UUID.randomUUID().toString(),
+            name = uniqueProfileName(CommitMessageBundle.message("settings.providers.newName")),
+            temperature = temperatureValue(),
+            responseLanguage = responseLanguage(),
+            streaming = streamingField.isSelected,
+        )
+        editProfile(profile, isNew = true)
+    }
+
+    private fun editSelectedProfile() {
+        val profileId = selectedProfile()?.id ?: return
+        cancelConnectionTest(showCancelled = false)
+        commitDisplayedReasoning()
+        profiles.firstOrNull { it.id == profileId }?.copy()?.let { editProfile(it, isNew = false) }
+    }
+
+    private fun editProfile(profile: LlmProfile, isNew: Boolean) {
+        val result = profileEditor.edit(
+            ProviderProfileEditInput(
+                title = CommitMessageBundle.message(
+                    if (isNew) "settings.providers.dialog.add" else "settings.providers.dialog.edit",
+                ),
+                profile = profile,
+                sessionKey = sessionKeys[profile.id]?.copyOf(),
+                hasStoredKey = hasStoredKey(profile.id),
+                modelSuggestions = fetchedModels[profile.id].orEmpty(),
+            ),
+            modelFetcher(),
+        ) ?: return
+
+        val edited = result.profile.copy(
+            temperature = temperatureValue(),
+            responseLanguage = responseLanguage(),
+            streaming = streamingField.isSelected,
+        )
+        val original = profiles.firstOrNull { it.id == edited.id }
+        if (original != null && (original.provider != edited.provider || original.baseUrl != edited.baseUrl)) {
+            SourceContextConsent.invalidate(edited)
+            fetchedModels.remove(edited.id)
+        }
+        if (isNew) profiles += edited else {
+            val index = profiles.indexOfFirst { it.id == edited.id }
+            if (index >= 0) profiles[index] = edited
+        }
+        if (result.modelSuggestions.isNotEmpty()) fetchedModels[edited.id] = result.modelSuggestions.distinct()
+        applyEditedKey(edited.id, result)
+        if (activeProfileId.isBlank()) activeProfileId = edited.id
+        displayedProfileId = activeProfileId
         loading = true
         try {
-            profiles += profile
-            profileModel.addElement(profile)
-            selectedIndex = newIndex
-            profileList.selectedIndex = newIndex
             refreshActiveChoices()
+            tableModel.fireTableDataChanged()
+            selectProfileRow(edited.id)
+            loadReasoningForActiveProfile()
         } finally {
             loading = false
         }
-        loadSelectedProfile()
     }
 
-    private fun copyProfile() {
-        saveSelectedProfile()
-        val selected = profiles.getOrNull(selectedIndex) ?: return
+    private fun applyEditedKey(profileId: String, result: ProviderProfileEditResult) {
+        if (result.clearApiKey && confirmApiKeyClear()) {
+            sessionKeys.remove(profileId)?.fill('\u0000')
+            dirtyKeyIds -= profileId
+            if (CommitMessageSettingsService.getInstance().snapshot(refreshPortable = false).profiles.any { it.id == profileId }) {
+                clearedKeyIds += profileId
+            }
+        }
+        result.apiKey?.let { key ->
+            try {
+                sessionKeys.remove(profileId)?.fill('\u0000')
+                sessionKeys[profileId] = key.copyOf()
+                dirtyKeyIds += profileId
+                clearedKeyIds -= profileId
+            } finally {
+                key.fill('\u0000')
+            }
+        }
+    }
+
+    private fun copySelectedProfile() {
+        val selectedId = selectedProfile()?.id ?: return
+        cancelConnectionTest(showCancelled = false)
+        commitDisplayedReasoning()
+        val selected = profiles.firstOrNull { it.id == selectedId } ?: return
         val copy = selected.copy(
             id = UUID.randomUUID().toString(),
-            name = CommitMessageBundle.message("common.copyName", selected.name),
+            name = uniqueProfileName(CommitMessageBundle.message("common.copyName", selected.name)),
             sourceConsentFingerprint = "",
         )
-        val newIndex = profiles.size
+        profiles += copy
+        fetchedModels[copy.id] = fetchedModels[selected.id].orEmpty()
+        activeProfileId = copy.id
+        displayedProfileId = copy.id
         loading = true
         try {
-            profiles += copy
-            profileModel.addElement(copy)
-            selectedIndex = newIndex
-            profileList.selectedIndex = newIndex
             refreshActiveChoices()
+            tableModel.fireTableDataChanged()
+            selectProfileRow(copy.id)
+            loadReasoningForActiveProfile()
         } finally {
             loading = false
         }
-        loadSelectedProfile()
     }
 
-    private fun deleteProfile() {
-        saveSelectedProfile()
-        val selected = profiles.getOrNull(selectedIndex) ?: return
-        if (CommitMessageSettingsService.getInstance().state.profiles.any { it.id == selected.id }) {
+    private fun removeSelectedProfile() {
+        cancelConnectionTest(showCancelled = false)
+        if (profiles.size <= 1) return
+        val selected = selectedProfile() ?: return
+        if (CommitMessageSettingsService.getInstance().snapshot(refreshPortable = false).profiles.any { it.id == selected.id }) {
             removedProfileIds += selected.id
         }
-        pendingKeys.remove(selected.id)?.fill('\u0000')
-        val removedIndex = selectedIndex
-        val newIndex = removedIndex.coerceAtMost(profiles.lastIndex - 1)
+        sessionKeys.remove(selected.id)?.fill('\u0000')
+        dirtyKeyIds -= selected.id
+        clearedKeyIds -= selected.id
+        fetchedModels.remove(selected.id)
+        val index = profiles.indexOfFirst { it.id == selected.id }
+        profiles.removeAt(index)
+        if (activeProfileId == selected.id) activeProfileId = profiles[index.coerceAtMost(profiles.lastIndex)].id
+        displayedProfileId = activeProfileId
         loading = true
         try {
-            profiles.removeAt(removedIndex)
-            profileModel.remove(removedIndex)
-            if (activeProfileId == selected.id) activeProfileId = profiles.firstOrNull()?.id.orEmpty()
-            selectedIndex = newIndex
-            profileList.selectedIndex = newIndex
             refreshActiveChoices()
+            tableModel.fireTableDataChanged()
+            selectActiveProfileRow()
+            loadReasoningForActiveProfile()
         } finally {
             loading = false
         }
-        loadSelectedProfile()
     }
 
-    private fun testConnection(fetchModels: Boolean) {
-        saveSelectedProfile()
-        val profile = profiles.getOrNull(selectedIndex)?.copy() ?: return
-        val stagedKey = pendingKeys[profile.id]?.copyOf()
-        val generation = ++connectionRequestGeneration
-        ApplicationManager.getApplication().executeOnPooledThread {
+    private fun modelFetcher(): ProviderModelFetcher = ProviderModelFetcher { profile, enteredKey, completed ->
+        val request = ProviderModelRequestHandle()
+        requestRunner.run(CommitMessageBundle.message("settings.providers.fetchModels")) { indicator ->
+            request.attach(indicator)
             val key = try {
-                stagedKey?.concatToString() ?: secretStore.getApiKey(profile.id).orEmpty()
-            } finally {
-                stagedKey?.fill('\u0000')
+                if (profile.provider == LlmProviderType.CHATGPT_CODEX) "" else resolveApiKey(profile, enteredKey)
+            } catch (error: Throwable) {
+                onEdt { completed(Result.failure(error)) }
+                return@run
             }
-            if (key.isBlank()) {
-                ApplicationManager.getApplication().invokeLater {
-                    if (!isCurrentConnectionRequest(profile, generation)) return@invokeLater
-                    Messages.showWarningDialog(
-                        CommitMessageBundle.message("error.apiKey.missing"),
-                        CommitMessageBundle.message("settings.providers.title"),
-                    )
+            if (profile.provider != LlmProviderType.CHATGPT_CODEX && key.isBlank()) {
+                onEdt {
+                    completed(Result.failure(MissingApiKeyException()))
                 }
-                return@executeOnPooledThread
+                return@run
             }
             runCatching {
-                HttpLlmProviderClient().fetchModels(
-                    profile,
-                    key,
-                    ProviderRequestBudget(3),
-                    EmptyProgressIndicator(),
-                )
+                providerClient.fetchModels(profile, key, ProviderRequestBudget(3), indicator)
             }.onSuccess { models ->
-                ApplicationManager.getApplication().invokeLater {
-                    if (!isCurrentConnectionRequest(profile, generation)) return@invokeLater
-                    if (fetchModels && models.isNotEmpty() && modelField.text.isBlank()) modelField.text = models.first()
-                    Messages.showInfoMessage(
-                        if (fetchModels) {
-                            models.joinToString("\n").ifBlank {
-                                CommitMessageBundle.message("settings.providers.noModels")
-                            }
-                        } else {
-                            CommitMessageBundle.message("settings.providers.testSuccess")
-                        },
-                        CommitMessageBundle.message("settings.providers.test"),
-                    )
+                onEdt {
+                    completed(Result.success(models))
                 }
             }.onFailure { error ->
-                ApplicationManager.getApplication().invokeLater {
-                    if (!isCurrentConnectionRequest(profile, generation)) return@invokeLater
-                    Messages.showErrorDialog(
-                        error.message?.take(500).orEmpty(),
-                        CommitMessageBundle.message("settings.providers.test"),
-                    )
+                onEdt { completed(Result.failure(sanitizedProviderError(error, key))) }
+            }
+        }
+        request
+    }
+
+    private fun testConnection() {
+        commitDisplayedReasoning()
+        val profile = profiles.firstOrNull { it.id == activeProfileId }?.copy(
+            temperature = 0.0,
+            responseLanguage = responseLanguage(),
+            streaming = false,
+            reasoningCompatibility = false,
+        ) ?: return
+        if (profile.provider != LlmProviderType.CHATGPT_CODEX && !isSafeEndpoint(profile.baseUrl)) {
+            showConnectionFailure(CommitMessageBundle.message("settings.providers.endpointInvalid"))
+            return
+        }
+        val handle = ConnectionTestHandle()
+        currentConnectionTest.set(handle)
+        val startedAt = System.nanoTime()
+        testRunning = true
+        testConnectionButton.text = CommitMessageBundle.message("settings.providers.cancelTest")
+        connectionStatusLabel.foreground = UIUtil.getContextHelpForeground()
+        connectionStatusLabel.text = CommitMessageBundle.message("settings.providers.modelsStage")
+
+        requestRunner.run(CommitMessageBundle.message("settings.providers.test")) { indicator ->
+            handle.indicator.set(indicator)
+            var key = ""
+            try {
+                checkConnectionActive(handle, indicator)
+                key = if (profile.provider == LlmProviderType.CHATGPT_CODEX) {
+                    ""
+                } else {
+                    resolveApiKey(profile, null)
                 }
+                if (profile.provider != LlmProviderType.CHATGPT_CODEX && key.isBlank()) {
+                    throw MissingApiKeyException()
+                }
+                val budget = ProviderRequestBudget(3)
+                val models = providerClient.fetchModels(profile, key, budget, indicator).distinct()
+                onEdt {
+                    if (isCurrentRequest(handle)) {
+                        fetchedModels[profile.id] = models
+                        connectionStatusLabel.text = if (profile.model.isBlank()) {
+                            CommitMessageBundle.message("settings.providers.selectModelAfterFetch", models.size)
+                        } else {
+                            CommitMessageBundle.message("settings.providers.inferenceStage")
+                        }
+                    }
+                }
+                if (profile.model.isBlank()) {
+                    onEdt { finishConnectionSuccess(handle, startedAt, modelsOnly = true) }
+                    return@run
+                }
+                checkConnectionActive(handle, indicator)
+                providerClient.complete(
+                    profile = profile,
+                    apiKey = key,
+                    request = LlmCompletionRequest(
+                        systemPrompt = "You are a connectivity test assistant.",
+                        userPrompt = "Reply with OK only.",
+                        structured = false,
+                        streaming = false,
+                        reasoningCompatibility = false,
+                        maxOutputTokens = 8,
+                    ),
+                    budget = budget,
+                    indicator = indicator,
+                )
+                onEdt { finishConnectionSuccess(handle, startedAt, modelsOnly = false) }
+            } catch (error: ProcessCanceledException) {
+                onEdt { finishConnectionCancelled(handle) }
+            } catch (error: Throwable) {
+                val safe = connectionErrorText(sanitizedProviderError(error, key))
+                onEdt {
+                    if (!isCurrentRequest(handle)) return@onEdt
+                    if (error is MissingApiKeyException) notifyMissingApiKey()
+                    finishConnectionFailure(handle, safe)
+                }
+            } finally {
+                handle.indicator.compareAndSet(indicator, null)
             }
         }
     }
 
-    private fun isCurrentConnectionRequest(profile: LlmProfile, generation: Long): Boolean {
-        val selected = profiles.getOrNull(selectedIndex) ?: return false
-        val selectedProvider = (providerCombo.selectedItem as? ProviderChoice)?.type ?: return false
-        return root != null && generation == connectionRequestGeneration &&
-            selected.id == profile.id && selectedProvider == profile.provider &&
-            endpointField.text.trim().trimEnd('/') == profile.baseUrl
+    private fun cancelConnectionTest(showCancelled: Boolean = true) {
+        if (!testRunning) return
+        val handle = currentConnectionTest.getAndSet(null)
+        handle?.cancelled?.set(true)
+        handle?.indicator?.get()?.cancel()
+        testRunning = false
+        testConnectionButton.text = CommitMessageBundle.message("settings.providers.test")
+        if (showCancelled) {
+            connectionStatusLabel.foreground = UIUtil.getContextHelpForeground()
+            connectionStatusLabel.text = CommitMessageBundle.message("settings.providers.testCancelled")
+        }
+    }
+
+    private fun finishConnectionSuccess(handle: ConnectionTestHandle, startedAt: Long, modelsOnly: Boolean) {
+        if (!isCurrentRequest(handle)) return
+        currentConnectionTest.compareAndSet(handle, null)
+        testRunning = false
+        testConnectionButton.text = CommitMessageBundle.message("settings.providers.test")
+        connectionStatusLabel.foreground = JBColor(0x2E7D32, 0x7CB342)
+        val elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000
+        connectionStatusLabel.text = CommitMessageBundle.message(
+            if (modelsOnly) "settings.providers.modelsOnlySuccess" else "settings.providers.testSuccessWithTime",
+            elapsedMillis,
+        )
+    }
+
+    private fun finishConnectionFailure(handle: ConnectionTestHandle, message: String) {
+        if (!isCurrentRequest(handle)) return
+        currentConnectionTest.compareAndSet(handle, null)
+        testRunning = false
+        testConnectionButton.text = CommitMessageBundle.message("settings.providers.test")
+        showConnectionFailure(message)
+    }
+
+    private fun finishConnectionCancelled(handle: ConnectionTestHandle) {
+        if (!isCurrentRequest(handle)) return
+        currentConnectionTest.compareAndSet(handle, null)
+        testRunning = false
+        testConnectionButton.text = CommitMessageBundle.message("settings.providers.test")
+        connectionStatusLabel.foreground = UIUtil.getContextHelpForeground()
+        connectionStatusLabel.text = CommitMessageBundle.message("settings.providers.testCancelled")
+    }
+
+    private fun showConnectionFailure(message: String) {
+        connectionStatusLabel.foreground = JBColor.RED
+        connectionStatusLabel.text = CommitMessageBundle.message("settings.providers.testFailed", message.take(300))
+    }
+
+    private fun resetConnectionStatus() {
+        val handle = currentConnectionTest.getAndSet(null)
+        handle?.cancelled?.set(true)
+        handle?.indicator?.get()?.cancel()
+        testRunning = false
+        testConnectionButton.text = CommitMessageBundle.message("settings.providers.test")
+        connectionStatusLabel.foreground = UIUtil.getContextHelpForeground()
+        connectionStatusLabel.text = ""
+    }
+
+    private fun isCurrentRequest(handle: ConnectionTestHandle): Boolean =
+        currentConnectionTest.get() === handle && !handle.cancelled.get()
+
+    private fun checkConnectionActive(handle: ConnectionTestHandle, indicator: ProgressIndicator) {
+        if (!isCurrentRequest(handle)) {
+            indicator.cancel()
+            throw ProcessCanceledException()
+        }
+        indicator.checkCanceled()
+    }
+
+    private fun resolveApiKey(profile: LlmProfile, enteredKey: CharArray?): String {
+        val profileId = profile.id
+        if (enteredKey != null) return enteredKey.concatToString()
+        if (clearedKeyIds.contains(profileId)) return ""
+        sessionKeys[profileId]?.let { return it.concatToString() }
+        return CommitMessageCredentialAccess.transaction {
+            val loaded = loadedProviderFields.profiles.firstOrNull { it.id == profileId }
+                ?: throw StaleProviderProfileException()
+            val current = CommitMessageSettingsService.getInstance().snapshot().profiles.firstOrNull { it.id == profileId }
+                ?: throw StaleProviderProfileException()
+            if (!hasSameCredentialDestination(current, loaded)) throw StaleProviderProfileException()
+            secretStore.credentialSnapshotWithinTransaction(profileId).apiKey.orEmpty()
+        }
+    }
+
+    private fun hasStoredKey(profileId: String): Boolean {
+        if (clearedKeyIds.contains(profileId)) return false
+        if (sessionKeys[profileId]?.isNotEmpty() == true) return true
+        return CommitMessageCredentialAccess.read { !secretStore.getApiKey(profileId).isNullOrBlank() }
+    }
+
+    private fun sanitizedProviderError(error: Throwable, knownKey: String): Throwable {
+        if (error is ProcessCanceledException) return error
+        val sanitized = ProviderErrorSanitizer.sanitize(error.message, knownKey)
+        return if (error is ProviderException) ProviderException(error.kind, sanitized, error) else RuntimeException(sanitized, error)
+    }
+
+    private fun connectionErrorText(error: Throwable): String = when ((error as? ProviderException)?.kind) {
+        ProviderErrorKind.AUTHENTICATION -> CommitMessageBundle.message("error.provider.authentication")
+        ProviderErrorKind.RATE_LIMIT -> CommitMessageBundle.message("error.provider.rateLimit")
+        ProviderErrorKind.TIMEOUT -> CommitMessageBundle.message("error.provider.timeout")
+        else -> error.message?.take(300).orEmpty().ifBlank { CommitMessageBundle.message("error.provider.response") }
+    }
+
+    private fun configureTableColumns() {
+        val widths = intArrayOf(160, 150, 260, 180)
+        widths.forEachIndexed { index, width -> profileTable.columnModel.getColumn(index).preferredWidth = JBUI.scale(width) }
+    }
+
+    private fun selectActiveProfileRow() = selectProfileRow(activeProfileId)
+
+    private fun selectProfileRow(profileId: String) {
+        val modelIndex = profiles.indexOfFirst { it.id == profileId }
+        if (modelIndex >= 0) {
+            val viewIndex = profileTable.convertRowIndexToView(modelIndex)
+            if (viewIndex >= 0) {
+                profileTable.selectionModel.setSelectionInterval(viewIndex, viewIndex)
+                profileTable.scrollRectToVisible(profileTable.getCellRect(viewIndex, 0, true))
+            } else {
+                profileTable.clearSelection()
+            }
+        } else {
+            profileTable.clearSelection()
+        }
+    }
+
+    private fun selectedProfile(): LlmProfile? {
+        val viewIndex = profileTable.selectedRow
+        if (viewIndex < 0) return null
+        return profiles.getOrNull(profileTable.convertRowIndexToModel(viewIndex))
+    }
+
+    private fun uniqueProfileName(base: String): String {
+        if (profiles.none { it.name == base }) return base
+        var suffix = 2
+        while (profiles.any { it.name == "$base $suffix" }) suffix += 1
+        return "$base $suffix"
+    }
+
+    private fun temperatureValue(): Double = (temperatureSpinner.value as? Number)?.toDouble()?.coerceIn(0.0, 2.0) ?: 0.5
+
+    private fun responseLanguage(): String = responseLanguageField.text.trim().ifBlank { "English" }
+
+    private fun providerLabel(provider: LlmProviderType): String = CommitMessageBundle.message(
+        when (provider) {
+            LlmProviderType.OPENAI_COMPATIBLE -> "provider.openaiCompatible"
+            LlmProviderType.ANTHROPIC -> "provider.anthropic"
+            LlmProviderType.CHATGPT_CODEX -> "provider.chatgptCodex"
+        },
+    )
+
+    private fun refreshCodexAccount() {
+        runCodexRequest(CommitMessageBundle.message("settings.providers.codex.checking")) { service, indicator, generation ->
+            val installation = service.installationStatus()
+            if (!installation.available) {
+                onCodexEdt(generation) { showCodexInstallation(installation) }
+                return@runCodexRequest
+            }
+            val account = service.account(indicator)
+            onCodexEdt(generation) {
+                showCodexAccount(account.type == "chatgpt" && !account.requiresOpenAiAuth, account.email, account.planType)
+            }
+        }
+    }
+
+    private fun startCodexLogin(deviceCode: Boolean) {
+        runCodexRequest(CommitMessageBundle.message("settings.providers.codex.signingIn")) { service, indicator, generation ->
+            val installation = service.installationStatus()
+            if (!installation.available) {
+                onCodexEdt(generation) { showCodexInstallation(installation) }
+                return@runCodexRequest
+            }
+            val completed = if (deviceCode) {
+                service.deviceLogin(indicator) { login ->
+                    onCodexEdt(generation) {
+                        openCodexUrl(login.verificationUrl)
+                        showCodexDeviceCode(login.userCode)
+                    }
+                }
+            } else {
+                service.browserLogin(indicator) { login ->
+                    onCodexEdt(generation) { openCodexUrl(login.authUrl) }
+                }
+            }
+            if (!completed.success) {
+                throw CodexAppServerException(
+                    CodexAppServerErrorKind.REQUEST,
+                    completed.error.orEmpty().ifBlank {
+                        CommitMessageBundle.message("settings.providers.codex.signInFailed")
+                    },
+                )
+            }
+            val account = service.account(indicator)
+            onCodexEdt(generation) { showCodexAccount(true, account.email, account.planType) }
+        }
+    }
+
+    private fun logoutCodexAccount() {
+        if (!confirmCodexLogout()) return
+        runCodexRequest(
+            CommitMessageBundle.message("settings.providers.codex.loggingOut"),
+            requireAppliedExecutable = false,
+        ) { service, _, generation ->
+            service.logout()
+            onCodexEdt(generation) { showCodexAccount(false, null, null) }
+        }
+    }
+
+    private fun runCodexRequest(
+        status: String,
+        requireAppliedExecutable: Boolean = true,
+        operation: (CodexAccountSettingsGateway, ProgressIndicator, Long) -> Unit,
+    ) {
+        if (requireAppliedExecutable && codexExecutableField.text.trim() != codexGateway.executablePath()) {
+            codexAccountStatus.text = CommitMessageBundle.message("settings.providers.codex.applyExecutableFirst")
+            return
+        }
+        val handle = synchronized(codexRequestLock) {
+            if (currentCodexRequest.get() != null) return
+            CodexRequestHandle(codexRequestGeneration.incrementAndGet()).also(currentCodexRequest::set)
+        }
+        val generation = handle.generation
+        codexAccountStatus.text = status
+        setCodexButtons(running = true, signedIn = codexSignedIn)
+        requestRunner.run(status) { indicator ->
+            handle.indicator.set(indicator)
+            if (currentCodexRequest.get() !== handle || generation != codexRequestGeneration.get()) indicator.cancel()
+            try {
+                indicator.checkCanceled()
+                operation(codexGateway, indicator, generation)
+            } catch (_: ProcessCanceledException) {
+                onCodexEdt(generation) {
+                    codexAccountStatus.text = CommitMessageBundle.message("settings.providers.testCancelled")
+                }
+            } catch (error: Throwable) {
+                val safe = ProviderErrorSanitizer.sanitize(error.message).take(300)
+                onCodexEdt(generation) {
+                    codexAccountStatus.text = safe.ifBlank { CommitMessageBundle.message("settings.providers.requestFailed") }
+                }
+            } finally {
+                handle.indicator.compareAndSet(indicator, null)
+                currentCodexRequest.compareAndSet(handle, null)
+                onCodexEdt(generation) { setCodexButtons(running = false, signedIn = codexSignedIn) }
+            }
+        }
+    }
+
+    private fun cancelCodexRequest() {
+        val cancelled = synchronized(codexRequestLock) {
+            codexRequestGeneration.incrementAndGet()
+            currentCodexRequest.getAndSet(null)
+        }
+        cancelled?.indicator?.getAndSet(null)?.cancel()
+        if (!settingsDisposed) setCodexButtons(running = false, signedIn = codexSignedIn)
+    }
+
+    private fun onCodexEdt(generation: Long, action: () -> Unit) {
+        onEdt {
+            if (!settingsDisposed && generation == codexRequestGeneration.get()) action()
+        }
+    }
+
+    private fun showCodexInstallation(status: CodexInstallationStatus) {
+        codexSignedIn = false
+        codexAccountStatus.text = when (status.problem) {
+            CodexInstallationProblem.NOT_FOUND -> CommitMessageBundle.message("settings.providers.codex.error.notFound")
+            CodexInstallationProblem.VERSION_TIMEOUT -> CommitMessageBundle.message("settings.providers.codex.error.versionTimeout")
+            CodexInstallationProblem.VERSION_UNKNOWN -> CommitMessageBundle.message("settings.providers.codex.error.versionUnknown")
+            CodexInstallationProblem.VERSION_TOO_OLD -> CommitMessageBundle.message(
+                "settings.providers.codex.error.versionTooOld",
+                CodexAppServerService.MINIMUM_CODEX_VERSION,
+            )
+            CodexInstallationProblem.VERSION_CHECK_FAILED -> CommitMessageBundle.message(
+                "settings.providers.codex.error.versionCheckFailed",
+            )
+            null -> status.message
+        }
+        setCodexButtons(running = false, signedIn = false)
+    }
+
+    private fun showCodexAccount(signedIn: Boolean, email: String?, planType: String?) {
+        codexSignedIn = signedIn
+        codexAccountStatus.text = if (signedIn) {
+            CommitMessageBundle.message(
+                "settings.providers.codex.signedIn",
+                email.orEmpty().ifBlank { CommitMessageBundle.message("settings.providers.codex.accountUnknown") },
+                planType.orEmpty().ifBlank { CommitMessageBundle.message("settings.providers.codex.planUnknown") },
+            )
+        } else {
+            CommitMessageBundle.message("settings.providers.codex.signedOut")
+        }
+        setCodexButtons(running = false, signedIn = signedIn)
+    }
+
+    private fun setCodexButtons(running: Boolean, signedIn: Boolean) {
+        codexRefreshButton.isEnabled = !running
+        codexSignInButton.isEnabled = !running && !signedIn
+        codexDeviceButton.isEnabled = !running && !signedIn
+        codexLogoutButton.isEnabled = !running && signedIn
     }
 
     private fun isSafeEndpoint(value: String): Boolean {
@@ -448,24 +1024,88 @@ class CommitProvidersConfigurable(
             uri.host != null && uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null
     }
 
-    private fun clearPendingKeys() {
-        pendingKeys.values.forEach { it.fill('\u0000') }
-        pendingKeys.clear()
+    private fun onEdt(action: () -> Unit) {
+        if (ApplicationManager.getApplication().isDispatchThread) action()
+        else ApplicationManager.getApplication().invokeLater(action, ModalityState.any())
     }
 
-    private fun buttons(vararg buttons: JButton): JPanel = JPanel(GridLayout(0, 1, 4, 4)).apply {
-        buttons.forEach(::add)
+    private fun clearSessionKeys() {
+        sessionKeys.values.forEach { it.fill('\u0000') }
+        sessionKeys.clear()
     }
 
-    private data class ProfileChoice(val id: String, val name: String) {
-        override fun toString(): String = name
+    private inner class ProfileTableModel : AbstractTableModel() {
+        private val columns = listOf(
+            "settings.providers.column.name",
+            "settings.providers.column.provider",
+            "settings.providers.column.endpoint",
+            "settings.providers.column.model",
+        )
+
+        override fun getRowCount(): Int = profiles.size
+
+        override fun getColumnCount(): Int = columns.size
+
+        override fun getColumnName(column: Int): String = CommitMessageBundle.message(columns[column])
+
+        override fun isCellEditable(rowIndex: Int, columnIndex: Int): Boolean = false
+
+        override fun getValueAt(rowIndex: Int, columnIndex: Int): Any {
+            val profile = profiles[rowIndex]
+            return when (columnIndex) {
+                0 -> profile.name
+                1 -> providerLabel(profile.provider)
+                2 -> profile.baseUrl.ifBlank {
+                    if (profile.provider == LlmProviderType.CHATGPT_CODEX) {
+                        CommitMessageBundle.message("settings.providers.codex.managed")
+                    } else {
+                        ""
+                    }
+                }
+                else -> profile.model
+            }
+        }
     }
 
-    private data class ProviderChoice(val type: LlmProviderType, val name: String) {
-        override fun toString(): String = name
+    private data class ProfileChoice(val id: String, val label: String) {
+        override fun toString(): String = label
     }
+
+    private data class ProviderFields(
+        val profiles: List<LlmProfile> = emptyList(),
+        val activeProfileId: String = "",
+        val temperature: Double = 0.5,
+        val responseLanguage: String = "English",
+        val smartEcho: Boolean = false,
+        val streaming: Boolean = true,
+    )
 
     companion object {
         const val ID = "emohce.settings.commitMessage.providers"
+    }
+
+    private class ConnectionTestHandle {
+        val cancelled = AtomicBoolean(false)
+        val indicator = AtomicReference<ProgressIndicator?>()
+    }
+
+    private class CodexRequestHandle(val generation: Long) {
+        val indicator = AtomicReference<ProgressIndicator?>()
+    }
+
+    private class ProviderModelRequestHandle : ProviderModelRequest {
+        private val cancelled = AtomicBoolean(false)
+        private val indicator = AtomicReference<ProgressIndicator?>()
+
+        fun attach(value: ProgressIndicator) {
+            indicator.set(value)
+            if (cancelled.get()) value.cancel()
+            value.checkCanceled()
+        }
+
+        override fun cancel() {
+            cancelled.set(true)
+            indicator.get()?.cancel()
+        }
     }
 }
