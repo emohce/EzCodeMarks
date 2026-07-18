@@ -4,11 +4,12 @@ status: verified
 scope: project
 fingerprint: plugin-verifier-multi-ide-first-run-outer-timeout-during-ide-preparation
 first_seen: 2026-07-15
-last_verified: 2026-07-15
+last_verified: 2026-07-16
 review_after: 2027-01-15
 evidence:
   - final verifyPlugin execution against three IDE targets
   - Gradle and Plugin Verifier cache/process progress
+  - r4 outer-timeout recovery followed by a bounded cached rerun with three compatible verdicts
 tags:
   - intellij-platform
   - plugin-verifier
@@ -57,7 +58,7 @@ Budget the first multi-IDE Plugin Verifier run separately from cached runs. Do n
   2. Rerun once with a bounded first-run allowance up to 30 minutes.
   3. Preserve the Gradle/IDE cache and inspect each generated verdict file.
   4. Treat only verifier verdicts or a genuinely stalled process as failure evidence.
-- Verification: the final run completed IU-253.33813.25, IU-261.26222.65, and IU-262.8665.176 as compatible.
+- Verification: both accepted task runs completed IU-253.33813.25, IU-261.26222.65, and IU-262.8665.176 as compatible; the r4 retry finished from the populated cache within the widened bounded allowance.
 - Applicability boundary: local multi-target Plugin Verifier preparation; not a blanket reason to ignore an actually stalled or failed verifier.
 - Fallback: verify one target at a time to isolate a corrupt distribution or target-specific failure.
 
@@ -66,3 +67,4 @@ Budget the first multi-IDE Plugin Verifier run separately from cached runs. Do n
 | Occurrence | Date | Task | Trigger | Failed Route | Recovery | Outcome |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 2026-07-15 | Commit message helper integration | First three-IDE compatibility run | Generic outer timeout interpreted as verifier failure | Progress inspection, longer bounded run, cache reuse | All three IDE targets compatible |
+| 2 | 2026-07-16 | Commit message helper integration r4 | A 120-second outer limit ended after two compatible verdicts while the third target was still progressing | Treating the outer timeout as a third-target failure or restarting repeatedly | Recalled the verified route, preserved caches, and ran one bounded continuation | All three targets compatible; no plugin incompatibility |
