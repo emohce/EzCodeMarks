@@ -16,7 +16,16 @@ data class LlmCompletionRequest(
     val structured: Boolean,
     val streaming: Boolean,
     val reasoningCompatibility: Boolean,
+    val maxOutputTokens: Int? = null,
+    val structuredOutput: LlmStructuredOutput? = null,
+    val expectedAuthGeneration: String? = null,
 )
+
+enum class LlmStructuredOutput {
+    COMMIT_DRAFT,
+    STYLE_PROPOSAL,
+    PROMPT_OPTIMIZATION,
+}
 
 data class LlmCompletion(
     val content: String,

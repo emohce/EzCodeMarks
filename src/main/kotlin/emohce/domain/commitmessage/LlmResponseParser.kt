@@ -15,6 +15,39 @@ object LlmResponseParser {
             ?.takeIf { it.isValid() }
     }
 
+    fun parseStyleProposalOrNull(content: String): CommitStyleProposal? {
+        val candidate = extractJsonObject(content) ?: return null
+        return runCatching { json.decodeFromString<CommitStyleProposal>(candidate) }
+            .getOrNull()
+            ?.let { proposal ->
+                proposal.copy(
+                    prompt = proposal.prompt.trim(),
+                    template = proposal.template.trim(),
+                    explanation = proposal.explanation.trim(),
+                )
+            }
+            ?.takeIf { it.prompt.isNotBlank() && it.template.isNotBlank() }
+    }
+
+    fun parsePromptOptimizationOrNull(content: String): CommitPromptOptimizationProposal? {
+        val candidate = extractJsonObject(content) ?: return null
+        return runCatching { json.decodeFromString<CommitPromptOptimizationProposal>(candidate) }
+            .getOrNull()
+            ?.let { proposal ->
+                proposal.copy(
+                    optimizedInstruction = proposal.optimizedInstruction.trim(),
+                    explanation = proposal.explanation.trim(),
+                )
+            }
+            ?.takeIf { proposal ->
+                proposal.optimizedInstruction.isNotBlank() &&
+                    proposal.optimizedInstruction.length <= 4_000 &&
+                    proposal.explanation.length <= 2_000 &&
+                    !proposal.optimizedInstruction.hasUnsupportedControlCharacter() &&
+                    !proposal.explanation.hasUnsupportedControlCharacter()
+            }
+    }
+
     fun extractJsonObject(content: String): String? {
         val trimmed = content.trim()
             .removePrefix("```json")
@@ -26,6 +59,10 @@ object LlmResponseParser {
         val end = trimmed.lastIndexOf('}')
         if (start < 0 || end <= start) return null
         return trimmed.substring(start, end + 1)
+    }
+
+    private fun String.hasUnsupportedControlCharacter(): Boolean = any { character ->
+        character.code < 0x20 && character !in setOf('\n', '\r', '\t')
     }
 }
 
