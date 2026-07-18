@@ -1,0 +1,18 @@
+Third-Party Notices
+===================
+
+git-commit-message-helper
+-------------------------
+
+Project: https://github.com/AutismSuperman/git-commit-message-helper
+License: Apache License 2.0
+
+EzCodeMarks includes adapted default Git commit template text and conventional
+commit type descriptions from git-commit-message-helper. The integration and
+surrounding implementation have been rewritten for the EzCodeMarks architecture.
+
+The complete Apache License 2.0 text is included in:
+META-INF/third-party/git-commit-message-helper-LICENSE.txt
+
+All other EzCodeMarks code remains under the repository's MIT License unless a
+file or notice states otherwise.

@@ -49,10 +49,11 @@
             id="emohce.settings.commitMessage"
             bundle="messages.CommitMessageBundle"
             key="settings.commitMessage.title"/>
-        <applicationConfigurable
+        <projectConfigurable
             parentId="emohce.settings.commitMessage"
             instance="emohce.presentation.commitmessage.settings.CommitTemplatesConfigurable"
             id="emohce.settings.commitMessage.templates"
+            nonDefaultProject="true"
             bundle="messages.CommitMessageBundle"
             key="settings.templates.title"/>
         <applicationConfigurable
@@ -67,7 +68,21 @@
             id="emohce.settings.commitMessage.project"
             nonDefaultProject="true"
             bundle="messages.CommitMessageBundle"
-            key="settings.project.title"/>
+            key="settings.project.private.title"/>
+        <projectConfigurable
+            parentId="emohce.settings.commitMessage"
+            instance="emohce.presentation.commitmessage.settings.CommitProjectProvidersConfigurable"
+            id="emohce.settings.commitMessage.projectProviders"
+            nonDefaultProject="true"
+            bundle="messages.CommitMessageBundle"
+            key="settings.project.providers.title"/>
+        <projectConfigurable
+            parentId="emohce.settings.commitMessage"
+            instance="emohce.presentation.commitmessage.settings.CommitProjectSharedConfigurable"
+            id="emohce.settings.commitMessage.projectShared"
+            nonDefaultProject="true"
+            bundle="messages.CommitMessageBundle"
+            key="settings.project.shared.title"/>
     </extensions>
 
     <actions>
@@ -174,9 +189,9 @@
             <action id="EzCodeMarks.CommitMessage.Generate"
                     class="emohce.presentation.commitmessage.action.GenerateCommitMessageAction"
                     icon="AllIcons.Actions.IntentionBulb">
-                <keyboard-shortcut keymap="$default" first-keystroke="control alt shift G"/>
-                <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift G"/>
-                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift G"/>
+                <keyboard-shortcut keymap="$default" first-keystroke="control alt X"/>
+                <keyboard-shortcut keymap="Mac OS X" first-keystroke="control alt X"/>
+                <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="control alt X"/>
             </action>
             <action id="EzCodeMarks.CommitMessage.GenerateWithContext"
                     class="emohce.presentation.commitmessage.action.GenerateCommitMessageWithContextAction"
@@ -189,6 +204,17 @@
                           anchor="before"
                           relative-to-action="Vcs.ShowMessageHistory"/>
             <add-to-group group-id="VcsActions.KeymapGroup" anchor="last"/>
+        </group>
+        <action id="EzCodeMarks.CommitMessage.SelectStyle"
+                class="emohce.presentation.commitmessage.action.SelectCommitStyleAction"
+                icon="AllIcons.Actions.GroupBy">
+            <add-to-group group-id="VcsActions.KeymapGroup" anchor="last"/>
+        </action>
+        <group id="EzCodeMarks.ToolsGroup" popup="true">
+            <group id="EzCodeMarks.CommitMessage.Tools" popup="true">
+                <reference ref="EzCodeMarks.CommitMessage.SelectStyle"/>
+            </group>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
         </group>
     </actions>
 </idea-plugin>
