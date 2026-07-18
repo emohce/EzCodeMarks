@@ -2,10 +2,10 @@
 
 Tool: codex
 
-## Read First
+## Prerequisites
 
-- CodeNote master: [../../../CzzProj/CodeNote/AiRef/VibePractice/Vibe_Rules/VibeAi.md](../../../CzzProj/CodeNote/AiRef/VibePractice/Vibe_Rules/VibeAi.md)
-- Project rules: [../rules/README.md](../rules/README.md)
+- Reuse the already-loaded [CodeNote master](../../../CzzProj/CodeNote/AiRef/VibePractice/Vibe_Rules/VibeAi.md) and [project rule index](../rules/README.md); do not reload them.
+- Open this index only when the selected task route requires project knowledge, decisions, technical facts, or memory.
 
 ## Authoritative Locations
 

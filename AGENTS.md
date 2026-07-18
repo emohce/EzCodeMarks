@@ -2,11 +2,14 @@
 
 Tool: codex
 
-Read first:
-- [../CzzProj/CodeNote/AiRef/VibePractice/Vibe_Rules/VibeAi.md](../CzzProj/CodeNote/AiRef/VibePractice/Vibe_Rules/VibeAi.md)
-- [vibe/rules/README.md](vibe/rules/README.md)
-- [vibe/rules/documentation.md](vibe/rules/documentation.md)
-- [vibe/specs/PROJECT_STATUS.md](vibe/specs/PROJECT_STATUS.md)
+Initialize once:
+- Reuse the injected [CodeNote master](../CzzProj/CodeNote/AiRef/VibePractice/Vibe_Rules/VibeAi.md), or read it once if it was not injected.
+- Read the [project rule index](vibe/rules/README.md) as the project entry.
+
+Load by task signal:
+- Read [documentation rules](vibe/rules/documentation.md) for Standard/Controlled, DB/data, deploy-gated, business-changing, documentation-governance, or template-propagation work.
+- Read the [process hub](vibe/specs/PROJECT_STATUS.md) for ongoing or overlapping work, Controlled tasks, DB/data, cross-repo, deploy-gated, or migration-linked work.
+- From the project index, load only the smallest applicable owner; do not preload route targets or error memory without a matching task, retry, or failure signal.
 
 Hard constraints:
 - Keep project-specific rules in `vibe/rules/`; do not copy the CodeNote master into this repository.
