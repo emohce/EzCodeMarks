@@ -14,13 +14,19 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import emohce.data.commitmessage.CommitMessageAiService
+import emohce.data.commitmessage.CodexAppServerService
 import emohce.data.commitmessage.CommitMessageCoordinatorService
+import emohce.data.commitmessage.CommitOperationHandle
 import emohce.data.commitmessage.CommitMessageSettingsService
 import emohce.data.commitmessage.CommitMessageSettingsState
+import emohce.data.commitmessage.CommitMessageSecretStore
 import emohce.data.commitmessage.CommitProjectStateService
+import emohce.data.commitmessage.CommitProjectSharedSettingsService
 import emohce.data.commitmessage.MissingActiveProfileException
 import emohce.data.commitmessage.MissingApiKeyException
+import emohce.data.commitmessage.MissingChatGptLoginException
 import emohce.data.commitmessage.SourceContextConsent
 import emohce.data.commitmessage.VelocityCommitTemplateRenderer
 import emohce.domain.commitmessage.AiPreview
@@ -30,13 +36,18 @@ import emohce.domain.commitmessage.CommitMessageParser
 import emohce.domain.commitmessage.CommitMessageDefaults
 import emohce.domain.commitmessage.CommitTemplateSnapshot
 import emohce.domain.commitmessage.LlmProfile
+import emohce.domain.commitmessage.LlmProviderType
+import emohce.domain.commitmessage.LlmProfileScope
 import emohce.domain.commitmessage.ProviderErrorKind
 import emohce.domain.commitmessage.ProviderException
+import emohce.domain.commitmessage.withEffectivePrompt
 import emohce.presentation.commitmessage.CommitActionSnapshot
 import emohce.presentation.commitmessage.CommitMessageBundle
 import emohce.presentation.commitmessage.IntelliJCommitActionContextAdapter
 import emohce.presentation.commitmessage.dialog.AdditionalRequirementsDialog
 import emohce.presentation.commitmessage.dialog.AiCommitMessagePreviewDialog
+import emohce.presentation.commitmessage.dialog.CommitMessagePreviewRefiner
+import emohce.presentation.commitmessage.dialog.DefaultCommitMessagePreviewRefiner
 import emohce.presentation.commitmessage.dialog.StructuredCommitMessageDialog
 import javax.swing.Icon
 
@@ -48,7 +59,7 @@ abstract class BaseCommitMessageAction(
 
     final override fun update(event: AnActionEvent) {
         val context = IntelliJCommitActionContextAdapter.availability(event)
-        val settings = CommitMessageSettingsService.getInstance().state
+        val settings = CommitMessageSettingsService.getInstance().snapshot(refreshPortable = false)
         val toolbarPlace = event.isFromActionToolbar && event.place in COMMIT_MESSAGE_TOOLBAR_PLACES
         event.presentation.isVisible = !toolbarPlace || toolbarVisible(settings)
 
@@ -81,7 +92,7 @@ abstract class BaseCommitMessageAction(
         snapshot: CommitActionSnapshot,
         title: String,
         computation: (ProgressIndicator) -> R,
-        success: (R) -> Unit,
+        success: (R, CommitOperationHandle) -> Unit,
     ) {
         val coordinator = CommitMessageCoordinatorService.getInstance(snapshot.project)
         val handle = coordinator.start(snapshot.document, kind) ?: return
@@ -103,13 +114,14 @@ abstract class BaseCommitMessageAction(
                 val value = result ?: return
                 if (!coordinator.isCurrent(handle)) return
                 if (IntelliJCommitActionContextAdapter.isUnchanged(snapshot)) {
-                    success(value)
+                    success(value, handle)
                 } else {
                     notifySourceChanged(snapshot)
                 }
             }
 
             override fun onThrowable(error: Throwable) {
+                if (!coordinator.isCurrent(handle) || handle.isCancelled()) return
                 notifyFailure(snapshot, error)
             }
 
@@ -121,18 +133,35 @@ abstract class BaseCommitMessageAction(
         }.queue()
     }
 
-    protected fun showPreview(snapshot: CommitActionSnapshot, preview: AiPreview) {
-        val dialog = AiCommitMessagePreviewDialog(snapshot.project, preview)
-        if (!dialog.showAndGet()) return
+    internal fun applyAiResult(
+        snapshot: CommitActionSnapshot,
+        preview: AiPreview,
+        showPreview: Boolean,
+        operationHandle: CommitOperationHandle? = null,
+        refiner: CommitMessagePreviewRefiner? = null,
+    ) {
+        val result = if (showPreview) {
+            val dialog = AiCommitMessagePreviewDialog(snapshot.project, preview, refiner)
+            if (!dialog.showAndGet()) return
+            dialog.result
+        } else {
+            preview.result
+        }
+        if (operationHandle != null &&
+            !CommitMessageCoordinatorService.getInstance(snapshot.project).isCurrent(operationHandle)
+        ) {
+            return
+        }
         if (IntelliJCommitActionContextAdapter.isUnchanged(snapshot)) {
-            IntelliJCommitActionContextAdapter.write(snapshot, dialog.result)
+            IntelliJCommitActionContextAdapter.write(snapshot, result)
         } else {
             notifySourceChanged(snapshot)
         }
     }
 
     protected fun activeProfileSnapshot(snapshot: CommitActionSnapshot): LlmProfile? {
-        val profile = CommitMessageSettingsService.getInstance().activeProfileSnapshot()
+        val settings = CommitMessageSettingsService.getInstance()
+        val profile = CommitProjectStateService.getInstance(snapshot.project).resolveProfileSnapshot(settings)
         if (profile == null) {
             notifyMissingProfile(snapshot)
             return null
@@ -142,45 +171,66 @@ abstract class BaseCommitMessageAction(
 
     protected fun consentedProfileSnapshot(snapshot: CommitActionSnapshot): LlmProfile? {
         val service = CommitMessageSettingsService.getInstance()
-        val current = service.activeProfileSnapshot() ?: run {
+        val projectState = CommitProjectStateService.getInstance(snapshot.project)
+        val current = projectState.resolveProfileSnapshot(service) ?: run {
             notifyMissingProfile(snapshot)
             return null
         }
-        if (SourceContextConsent.isGranted(current)) return current.copy()
+        val accountGeneration = when (current.provider) {
+            LlmProviderType.CHATGPT_CODEX -> CodexAppServerService.getInstance().authGeneration()
+            else -> {
+                val selected = projectState.activeProfileRef()
+                val credentialId = if (selected?.scope == LlmProfileScope.PROJECT &&
+                    selected.id == current.id && projectState.profile(current.id) != null
+                ) {
+                    projectState.projectCredentialId(current.id)
+                } else {
+                    current.id
+                }
+                CommitMessageSecretStore().credentialGeneration(credentialId)
+            }
+        }
+        if (projectState.hasSourceContextConsent(current, accountGeneration)) return current.copy()
+        val destination = current.baseUrl.ifBlank { "ChatGPT / Codex" }
         val choice = Messages.showYesNoDialog(
             snapshot.project,
-            CommitMessageBundle.message("error.context.consent.message", current.baseUrl),
+            CommitMessageBundle.message("error.context.consent.message", destination),
             CommitMessageBundle.message("error.context.consent.title"),
             Messages.getQuestionIcon(),
         )
         if (choice != Messages.YES) return null
-        return service.grantSourceContextConsent(current) ?: run {
-            notifySourceChanged(snapshot)
-            null
-        }
+        projectState.grantSourceContextConsent(current, accountGeneration)
+        return current.copy()
     }
 
     protected fun templateSnapshot(snapshot: CommitActionSnapshot): CommitTemplateSnapshot {
         val service = CommitMessageSettingsService.getInstance()
-        val state = service.state.deepCopy()
-        val projectTemplateId = CommitProjectStateService.getInstance(snapshot.project).state.templateId
-        val selected = state.templates.firstOrNull { it.id == projectTemplateId }
-            ?: state.templates.firstOrNull { it.id == state.defaultTemplateId }
-            ?: state.templates.firstOrNull { it.id == CommitMessageDefaults.DEFAULT_TEMPLATE_ID }
-            ?: CommitMessageDefaults.templates().single()
-        val fallback = state.templates.firstOrNull { it.id == CommitMessageDefaults.DEFAULT_TEMPLATE_ID }?.copy()
-            ?: CommitMessageDefaults.templates().single()
+        val state = service.snapshot()
+        val projectState = CommitProjectStateService.getInstance(snapshot.project)
+        val shared = CommitProjectSharedSettingsService.getInstance(snapshot.project)
+        val style = projectState.resolveStyle(service, shared).withEffectivePrompt()
         return CommitTemplateSnapshot(
-            selected = selected.copy(),
-            fallback = fallback,
+            candidates = projectState.templateCandidates(service, shared).map { it.copy() },
             allowedTypes = state.types.map { it.id }.filter { it.isNotBlank() }.distinct(),
+            style = style.copy(),
+            persistentInstructions = shared.effectiveExtraInstructions(state.persistentExtraInstructions),
         )
     }
 
     private fun notifyFailure(snapshot: CommitActionSnapshot, error: Throwable) {
-        if (error is MissingActiveProfileException || error is MissingApiKeyException) {
-            notifyMissingProfile(snapshot)
-            return
+        when (error) {
+            is MissingActiveProfileException -> {
+                notifyProviderSetup(snapshot, "error.profile.missing", providerSettingsTarget(snapshot))
+                return
+            }
+            is MissingApiKeyException -> {
+                notifyProviderSetup(snapshot, "error.apiKey.missing", providerSettingsTarget(snapshot))
+                return
+            }
+            is MissingChatGptLoginException -> {
+                notifyProviderSetup(snapshot, "error.chatgpt.loginRequired", PROVIDERS_CONFIGURABLE_ID)
+                return
+            }
         }
         val message = when ((error as? ProviderException)?.kind) {
             ProviderErrorKind.AUTHENTICATION -> CommitMessageBundle.message("error.provider.authentication")
@@ -199,10 +249,14 @@ abstract class BaseCommitMessageAction(
     }
 
     private fun notifyMissingProfile(snapshot: CommitActionSnapshot) {
+        notifyProviderSetup(snapshot, "error.profile.missing", providerSettingsTarget(snapshot))
+    }
+
+    private fun notifyProviderSetup(snapshot: CommitActionSnapshot, messageKey: String, configurableId: String) {
         val notification = NotificationGroupManager.getInstance()
             .getNotificationGroup("EzCodeMarks")
             .createNotification(
-                CommitMessageBundle.message("error.profile.missing"),
+                CommitMessageBundle.message(messageKey),
                 NotificationType.WARNING,
             )
         notification.addAction(
@@ -211,11 +265,17 @@ abstract class BaseCommitMessageAction(
             ) {
                 ShowSettingsUtil.getInstance().showSettingsDialog(
                     snapshot.project,
-                    PROVIDERS_CONFIGURABLE_ID,
+                    configurableId,
                 )
             },
         )
         notification.notify(snapshot.project)
+    }
+
+    private fun providerSettingsTarget(snapshot: CommitActionSnapshot): String {
+        val ref = CommitProjectStateService.getInstance(snapshot.project).activeProfileRef()
+        return if (ref?.scope == LlmProfileScope.PROJECT) PROJECT_PROVIDERS_CONFIGURABLE_ID
+        else PROVIDERS_CONFIGURABLE_ID
     }
 
     private fun notifySourceChanged(snapshot: CommitActionSnapshot) {
@@ -232,6 +292,7 @@ abstract class BaseCommitMessageAction(
         const val COMMIT_MESSAGE_PLACE: String = "CommitMessage"
         const val CHANGES_VIEW_COMMIT_TOOLBAR_PLACE: String = "ChangesView.CommitToolbar"
         const val PROVIDERS_CONFIGURABLE_ID: String = "emohce.settings.commitMessage.providers"
+        const val PROJECT_PROVIDERS_CONFIGURABLE_ID: String = "emohce.settings.commitMessage.projectProviders"
 
         private val COMMIT_MESSAGE_TOOLBAR_PLACES = setOf(
             COMMIT_MESSAGE_PLACE,
@@ -247,7 +308,7 @@ class CreateCommitMessageAction : BaseCommitMessageAction(CommitActionKind.CREAT
 
     override fun perform(snapshot: CommitActionSnapshot) {
         val settingsService = CommitMessageSettingsService.getInstance()
-        val settings = settingsService.state.deepCopy()
+        val settings = settingsService.snapshot()
         val projectState = CommitProjectStateService.getInstance(snapshot.project)
         val initial = when {
             snapshot.currentText.isNotBlank() -> CommitMessageParser.parse(
@@ -261,7 +322,7 @@ class CreateCommitMessageAction : BaseCommitMessageAction(CommitActionKind.CREAT
             )
         }
 
-        val smartEchoProfile = settingsService.activeProfileSnapshot()
+        val smartEchoProfile = projectState.resolveProfileSnapshot(settingsService)
         if (settings.smartEcho && snapshot.currentText.isNotBlank() && smartEchoProfile != null) {
             val profile = smartEchoProfile
             runBackground(
@@ -272,10 +333,16 @@ class CreateCommitMessageAction : BaseCommitMessageAction(CommitActionKind.CREAT
                         initial,
                         profile,
                         settings.types.map { type -> type.id },
+                        projectState.resolveStyle(
+                            settingsService,
+                            CommitProjectSharedSettingsService.getInstance(snapshot.project),
+                        ).withEffectivePrompt().prompt,
+                        CommitProjectSharedSettingsService.getInstance(snapshot.project)
+                            .effectiveExtraInstructions(settings.persistentExtraInstructions),
                         it,
                     )
                 },
-                success = { showStructuredEditor(snapshot, it, settings) },
+                success = { result, _ -> showStructuredEditor(snapshot, result, settings) },
             )
         } else {
             showStructuredEditor(snapshot, initial, settings)
@@ -293,20 +360,13 @@ class CreateCommitMessageAction : BaseCommitMessageAction(CommitActionKind.CREAT
             projectState.saveDraft(dialog.draft)
             return
         }
-        val template = projectState.resolveTemplate(CommitMessageSettingsService.getInstance())
+        val settingsService = CommitMessageSettingsService.getInstance()
         val renderer = ApplicationManager.getApplication().getService(VelocityCommitTemplateRenderer::class.java)
-        val validation = renderer.validate(template)
-        if (!validation.valid) {
-            NotificationGroupManager.getInstance()
-                .getNotificationGroup("EzCodeMarks")
-                .createNotification(
-                    templateErrorMessage(validation.error),
-                    NotificationType.ERROR,
-                )
-                .notify(snapshot.project)
-            projectState.saveDraft(dialog.draft)
-            return
-        }
+        val template = projectState.resolveValidTemplate(
+            settingsService,
+            CommitProjectSharedSettingsService.getInstance(snapshot.project),
+            renderer,
+        )
         val rendered = renderer.render(template, dialog.draft)
         if (rendered.isBlank()) {
             NotificationGroupManager.getInstance()
@@ -331,12 +391,6 @@ class CreateCommitMessageAction : BaseCommitMessageAction(CommitActionKind.CREAT
         }
     }
 
-    private fun templateErrorMessage(error: String): String =
-        if (error == VelocityCommitTemplateRenderer.EMPTY_OUTPUT_ERROR) {
-            CommitMessageBundle.message("error.template.empty")
-        } else {
-            CommitMessageBundle.message("error.template.invalid", error)
-        }
 }
 
 class GenerateCommitMessageAction : BaseCommitMessageAction(
@@ -349,6 +403,7 @@ class GenerateCommitMessageAction : BaseCommitMessageAction(
         context.hasChanges || context.hasRevision
 
     override fun perform(snapshot: CommitActionSnapshot) {
+        val previewBeforeApply = CommitMessageSettingsService.getInstance().snapshot().previewAiResultBeforeApply
         val profile = consentedProfileSnapshot(snapshot) ?: return
         val template = templateSnapshot(snapshot)
         runBackground(
@@ -357,7 +412,15 @@ class GenerateCommitMessageAction : BaseCommitMessageAction(
             computation = {
                 CommitMessageAiService.getInstance(snapshot.project).generate(snapshot, "", profile, template, it)
             },
-            success = { showPreview(snapshot, it) },
+            success = { preview, handle ->
+                applyAiResult(
+                    snapshot,
+                    preview,
+                    previewBeforeApply,
+                    handle,
+                    DefaultCommitMessagePreviewRefiner(snapshot.project, profile, template, handle),
+                )
+            },
         )
     }
 }
@@ -376,6 +439,7 @@ class GenerateCommitMessageWithContextAction : BaseCommitMessageAction(
         val dialog = AdditionalRequirementsDialog(snapshot.project)
         if (!dialog.showAndGet()) return
         val requirements = dialog.requirements
+        val previewBeforeApply = CommitMessageSettingsService.getInstance().snapshot().previewAiResultBeforeApply
         val profile = consentedProfileSnapshot(snapshot) ?: return
         val template = templateSnapshot(snapshot)
         runBackground(
@@ -385,30 +449,125 @@ class GenerateCommitMessageWithContextAction : BaseCommitMessageAction(
                 CommitMessageAiService.getInstance(snapshot.project)
                     .generate(snapshot, requirements, profile, template, it)
             },
-            success = { showPreview(snapshot, it) },
+            success = { preview, handle ->
+                applyAiResult(
+                    snapshot,
+                    preview,
+                    previewBeforeApply,
+                    handle,
+                    DefaultCommitMessagePreviewRefiner(snapshot.project, profile, template, handle),
+                )
+            },
         )
     }
 }
 
-class FormatCommitMessageAction : BaseCommitMessageAction(
+internal fun interface FormatInstructionsProvider {
+    fun request(project: com.intellij.openapi.project.Project): String?
+}
+
+class FormatCommitMessageAction internal constructor(
+    private val instructionsProvider: FormatInstructionsProvider,
+) : BaseCommitMessageAction(
     CommitActionKind.FORMAT,
     AllIcons.Actions.ReformatCode,
 ) {
+    constructor() : this(FormatInstructionsProvider { project ->
+        val dialog = AdditionalRequirementsDialog(
+            project,
+            AdditionalRequirementsDialog.Purpose.FORMAT,
+        )
+        if (dialog.showAndGet()) dialog.requirements else null
+    })
+
     override fun toolbarVisible(settings: CommitMessageSettingsState): Boolean = settings.showFormatInToolbar
 
     override fun supports(context: emohce.presentation.commitmessage.CommitActionAvailability): Boolean =
         context.currentText.isNotBlank()
 
     override fun perform(snapshot: CommitActionSnapshot) {
+        val instructions = instructionsProvider.request(snapshot.project) ?: return
+        val previewBeforeApply = CommitMessageSettingsService.getInstance().snapshot().previewAiResultBeforeApply
         val profile = activeProfileSnapshot(snapshot) ?: return
         val template = templateSnapshot(snapshot)
         runBackground(
             snapshot = snapshot,
             title = CommitMessageBundle.message("progress.format"),
             computation = {
-                CommitMessageAiService.getInstance(snapshot.project).format(snapshot, profile, template, it)
+                CommitMessageAiService.getInstance(snapshot.project).format(
+                    snapshot.currentText,
+                    instructions,
+                    profile,
+                    template,
+                    it,
+                )
             },
-            success = { showPreview(snapshot, it) },
+            success = { preview, handle ->
+                applyAiResult(
+                    snapshot,
+                    preview,
+                    previewBeforeApply,
+                    handle,
+                    DefaultCommitMessagePreviewRefiner(snapshot.project, profile, template, handle),
+                )
+            },
         )
+    }
+}
+
+class SelectCommitStyleAction : DumbAwareAction() {
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+
+    override fun update(event: AnActionEvent) {
+        val project = event.project
+        val context = IntelliJCommitActionContextAdapter.availability(event)
+        val running = context?.document?.let {
+            CommitMessageCoordinatorService.getInstance(context.project).status(it)
+        }
+        event.presentation.isEnabled = project != null && running == null
+    }
+
+    override fun actionPerformed(event: AnActionEvent) {
+        val project = event.project ?: return
+        val service = CommitMessageSettingsService.getInstance()
+        val projectState = CommitProjectStateService.getInstance(project)
+        val shared = CommitProjectSharedSettingsService.getInstance(project)
+        val global = service.snapshot()
+        val styles = global.styles
+        val defaultStyle = shared.defaultStyle()
+            ?: global.styles.firstOrNull { it.id == global.defaultStyleId }
+            ?: CommitMessageDefaults.standardStyle()
+        val choices = buildList {
+            add(StyleChoice("", CommitMessageBundle.message("action.style.useProjectDefault", displayStyleName(defaultStyle))))
+            addAll(styles.map { style -> StyleChoice(style.id, displayStyleName(style)) })
+            addAll(
+                shared.state.styles
+                    .filterNot { candidate -> styles.any { it.id == candidate.id } }
+                    .map { style ->
+                        StyleChoice(
+                            style.id,
+                            CommitMessageBundle.message("settings.project.shared.choice", displayStyleName(style)),
+                        )
+                    },
+            )
+        }
+        val selected = choices.firstOrNull { it.id == projectState.state.styleId } ?: choices.first()
+        JBPopupFactory.getInstance()
+            .createPopupChooserBuilder(choices)
+            .setTitle(CommitMessageBundle.message("action.style.title"))
+            .setSelectedValue(selected, true)
+            .setItemChosenCallback { choice -> projectState.setStyleId(choice.id) }
+            .createPopup()
+            .showInBestPositionFor(event.dataContext)
+    }
+
+    private fun displayStyleName(style: emohce.domain.commitmessage.CommitStyleDefinition): String = when (style.id) {
+        CommitMessageDefaults.STANDARD_STYLE_ID -> CommitMessageBundle.message("style.standard.name")
+        CommitMessageDefaults.CONCISE_STYLE_ID -> CommitMessageBundle.message("style.concise.name")
+        else -> style.name
+    }
+
+    private data class StyleChoice(val id: String, val label: String) {
+        override fun toString(): String = label
     }
 }

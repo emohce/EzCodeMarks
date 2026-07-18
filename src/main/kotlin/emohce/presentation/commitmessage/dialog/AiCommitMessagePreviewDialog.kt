@@ -9,6 +9,8 @@ import com.intellij.ui.EditorTextField
 import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.panel
 import emohce.domain.commitmessage.AiPreview
+import emohce.domain.commitmessage.CommitRefinementSession
+import emohce.domain.commitmessage.CommitRefinementSessionSnapshot
 import emohce.presentation.commitmessage.CommitMessageBundle
 import emohce.domain.commitmessage.CommitMessageDefaults
 import java.awt.Dimension
@@ -17,10 +19,25 @@ import javax.swing.AbstractAction
 import javax.swing.Action
 import javax.swing.JComponent
 
-class AiCommitMessagePreviewDialog(
-    project: Project,
+internal fun interface CommitRefinementInteraction {
+    fun refine(
+        project: Project,
+        currentCommit: String,
+        refiner: CommitMessagePreviewRefiner,
+    ): CommitRefinementDialogResult?
+}
+
+internal class AiCommitMessagePreviewDialog(
+    private val project: Project,
     private val preview: AiPreview,
+    private val refiner: CommitMessagePreviewRefiner? = null,
+    private val refinementInteraction: CommitRefinementInteraction = CommitRefinementInteraction {
+            targetProject, currentCommit, targetRefiner ->
+        val dialog = CommitRefinementPromptDialog(targetProject, currentCommit, targetRefiner)
+        if (dialog.showAndGet()) dialog.result else null
+    },
 ) : DialogWrapper(project) {
+    private val session = CommitRefinementSession(preview.original, preview.result)
     private val originalField = EditorTextField(preview.original, project, PlainTextFileType.INSTANCE).apply {
         setOneLineMode(false)
         setViewer(true)
@@ -33,6 +50,32 @@ class AiCommitMessagePreviewDialog(
             CopyPasteManager.copyTextToClipboard(resultField.text)
         }
     }
+    private val refineAction = object : AbstractAction(CommitMessageBundle.message("dialog.preview.refine")) {
+        override fun actionPerformed(event: ActionEvent?) {
+            val targetRefiner = refiner ?: return
+            val currentCommit = resultField.text.trim()
+            if (currentCommit.isBlank()) return
+            val refinement = refinementInteraction.refine(project, currentCommit, targetRefiner) ?: return
+            if (refinement.beforeCommit != currentCommit || refinement.afterCommit.isBlank()) return
+            session.recordRefinement(
+                beforeCommit = refinement.beforeCommit,
+                afterCommit = refinement.afterCommit,
+                rawPrompt = refinement.rawPrompt,
+                aiOptimizedPrompt = refinement.aiOptimizedPrompt,
+                confirmedPrompt = refinement.confirmedPrompt,
+                promptEnvelope = refinement.promptEnvelope,
+                promptOptimizationEnvelope = refinement.promptOptimizationEnvelope,
+                promptOptimizationExplanation = refinement.promptOptimizationExplanation,
+            )
+            resultField.text = refinement.afterCommit
+            updateHistoryActionName()
+        }
+    }
+    private val historyAction = object : AbstractAction() {
+        override fun actionPerformed(event: ActionEvent?) {
+            CommitRefinementHistoryDialog(project, session.snapshot(resultField.text.trim())).show()
+        }
+    }
 
     init {
         title = CommitMessageBundle.message("dialog.preview.title")
@@ -40,6 +83,7 @@ class AiCommitMessagePreviewDialog(
         setCancelButtonText(CommitMessageBundle.message("dialog.preview.cancel"))
         originalField.setDisposedWith(disposable)
         resultField.setDisposedWith(disposable)
+        updateHistoryActionName()
         init()
     }
 
@@ -75,7 +119,11 @@ class AiCommitMessagePreviewDialog(
         }.resizableRow()
     }.apply { preferredSize = Dimension(1_000, 600) }
 
-    override fun createActions(): Array<Action> = arrayOf(okAction, copyAction, cancelAction)
+    override fun createActions(): Array<Action> = if (refiner == null) {
+        arrayOf(okAction, copyAction, cancelAction)
+    } else {
+        arrayOf(refineAction, historyAction, okAction, copyAction, cancelAction)
+    }
 
     override fun getPreferredFocusedComponent(): JComponent = resultField
 
@@ -83,5 +131,21 @@ class AiCommitMessagePreviewDialog(
         ValidationInfo(CommitMessageBundle.message("error.output.invalid"), resultField)
     } else {
         null
+    }
+
+    @org.jetbrains.annotations.TestOnly
+    internal fun componentForTest(): JComponent = createCenterPanel()
+
+    @org.jetbrains.annotations.TestOnly
+    internal fun actionsForTest(): List<Action> = createActions().toList()
+
+    @org.jetbrains.annotations.TestOnly
+    internal fun sessionForTest(): CommitRefinementSessionSnapshot = session.snapshot(resultField.text.trim())
+
+    private fun updateHistoryActionName() {
+        historyAction.putValue(
+            Action.NAME,
+            CommitMessageBundle.message("dialog.preview.history", session.operations.size),
+        )
     }
 }
