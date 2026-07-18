@@ -12,6 +12,8 @@ import emohce.domain.commitmessage.ProviderException
 import emohce.domain.commitmessage.ProviderRequestBudget
 import io.mockk.mockk
 import io.mockk.every
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterEach
@@ -51,6 +53,46 @@ class HttpLlmProviderClientTest {
         assertEquals("feat: add preview", result.content)
         assertEquals("Bearer test-key", seenAuthorization[0])
         assertEquals(false, seenRequestBody[0].orEmpty().contains("response_format"))
+    }
+
+    @Test
+    fun `connection test token cap is sent by openai compatible providers`() {
+        val requestBody = arrayOfNulls<String>(1)
+        val local = startServer("/v1/chat/completions") { exchange ->
+            requestBody[0] = exchange.requestBody.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+            exchange.respond(200, "{\"choices\":[{\"message\":{\"content\":\"OK\"}}]}")
+        }
+
+        HttpLlmProviderClient().complete(
+            profile(local, streaming = false),
+            "test-key",
+            request(streaming = false).copy(maxOutputTokens = 8),
+            ProviderRequestBudget(3),
+            indicator(),
+        )
+
+        val body = Json.parseToJsonElement(requestBody[0].orEmpty()).jsonObject
+        assertEquals(8, body.getValue("max_tokens").jsonPrimitive.int)
+    }
+
+    @Test
+    fun `connection test token cap overrides anthropic default`() {
+        val requestBody = arrayOfNulls<String>(1)
+        val local = startServer("/v1/messages") { exchange ->
+            requestBody[0] = exchange.requestBody.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+            exchange.respond(200, "{\"content\":[{\"type\":\"text\",\"text\":\"OK\"}]}")
+        }
+
+        HttpLlmProviderClient().complete(
+            profile(local, LlmProviderType.ANTHROPIC, streaming = false),
+            "test-key",
+            request(streaming = false).copy(maxOutputTokens = 8),
+            ProviderRequestBudget(3),
+            indicator(),
+        )
+
+        val body = Json.parseToJsonElement(requestBody[0].orEmpty()).jsonObject
+        assertEquals(8, body.getValue("max_tokens").jsonPrimitive.int)
     }
 
     @Test
