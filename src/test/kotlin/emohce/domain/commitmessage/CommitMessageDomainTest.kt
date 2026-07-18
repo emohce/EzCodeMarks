@@ -49,7 +49,7 @@ class CommitMessageDomainTest {
         )
 
         assertEquals(
-            "fix(vcs)!: preserve draft\n\nBody\n\nBREAKING CHANGE: API changed\n\nCloses: #7\n\n[skip ci]",
+            "fix(vcs): preserve draft\n\nBody\n\nBREAKING CHANGE: API changed\n\nCloses #7\n\n[skip ci]",
             message,
         )
     }
@@ -62,6 +62,89 @@ class CommitMessageDomainTest {
 
         assertFalse(result.valid)
         assertTrue(result.error.isNotBlank())
+    }
+
+    @Test
+    fun `velocity policy rejects resource evaluation and iteration directives including escaped forms`() {
+        val renderer = VelocityCommitTemplateRenderer()
+        val forbidden = listOf(
+            "#parse(\"classpath-resource.vm\")",
+            "#include(\"classpath-resource.vm\")",
+            "#evaluate(${'$'}subject)",
+            "#foreach(${'$'}item in ${'$'}subject)${'$'}item#end",
+            "\\\\#parse(\"classpath-resource.vm\")",
+        )
+
+        forbidden.forEachIndexed { index, content ->
+            val result = renderer.validate(CommitTemplateDefinition("forbidden-$index", "Forbidden", content))
+
+            assertFalse(result.valid, content)
+            assertTrue(result.error.isNotBlank(), content)
+        }
+    }
+
+    @Test
+    fun `velocity policy rejects arbitrary members indexes and unknown references`() {
+        val renderer = VelocityCommitTemplateRenderer()
+        val forbidden = listOf(
+            "${'$'}subject.length",
+            "${'$'}subject[0]",
+            "${'$'}string.trim(${'$'}subject).length",
+            "${'$'}unknownReference",
+        )
+
+        forbidden.forEachIndexed { index, content ->
+            val result = renderer.validate(CommitTemplateDefinition("reference-$index", "Reference", content))
+
+            assertFalse(result.valid, content)
+            assertTrue(result.error.isNotBlank(), content)
+        }
+    }
+
+    @Test
+    fun `velocity policy rejects rendered output beyond the bounded writer`() {
+        val chunk = "x".repeat(15_000)
+        val result = VelocityCommitTemplateRenderer().validate(
+            CommitTemplateDefinition(
+                "too-much-output",
+                "Too much output",
+                "#set(${'$'}chunk = \"$chunk\")${'$'}chunk${'$'}chunk${'$'}chunk${'$'}chunk${'$'}chunk",
+            ),
+        )
+
+        assertFalse(result.valid)
+        assertTrue(result.error.isNotBlank())
+    }
+
+    @Test
+    fun `velocity default template and bounded string helpers remain available`() {
+        val renderer = VelocityCommitTemplateRenderer()
+        assertTrue(renderer.validate(CommitMessageDefaults.templates().single()).valid)
+
+        val rendered = renderer.render(
+            CommitTemplateDefinition(
+                "helpers",
+                "Helpers",
+                "${'$'}string.lower(${'$'}string.trim(${'$'}subject))|${'$'}string.truncate(${'$'}body, 4)",
+            ),
+            CommitDraft(subject = "  Subject  ", body = "abcdef"),
+        )
+
+        assertEquals("subject|abcd", rendered)
+    }
+
+    @Test
+    fun `velocity renderer exposes upstream and EzCodeMarks compatibility aliases`() {
+        val message = VelocityCommitTemplateRenderer().render(
+            CommitTemplateDefinition(
+                "aliases",
+                "Aliases",
+                "${'$'}{changes}|${'$'}{breakingChanges}|${'$'}{skipCi}|${'$'}{skipCiEnabled}",
+            ),
+            CommitDraft(subject = "subject", breakingChanges = "API changed", skipCi = true),
+        )
+
+        assertEquals("API changed|API changed|[skip ci]|true", message)
     }
 
     @Test
@@ -93,5 +176,48 @@ class CommitMessageDomainTest {
         assertTrue(SourceContextConsent.isGranted(profile))
         profile.baseUrl = "https://api.example/tenanta"
         assertFalse(SourceContextConsent.isGranted(profile))
+    }
+
+    @Test
+    fun `refinement session keeps original initial final and ordered operation evidence separate`() {
+        val session = CommitRefinementSession(
+            originalCommit = "draft before generation",
+            initialAiResult = "feat: initial AI result",
+        )
+        val firstEnvelope = LlmPromptEnvelope("system one", "user one")
+        val secondEnvelope = LlmPromptEnvelope("system two", "user two")
+
+        session.recordRefinement(
+            beforeCommit = "feat: initial AI result",
+            afterCommit = "feat: concise result",
+            rawPrompt = "Make it shorter",
+            aiOptimizedPrompt = "Use one concise imperative subject",
+            confirmedPrompt = "Use one concise imperative subject under 50 characters",
+            promptEnvelope = firstEnvelope,
+            promptOptimizationEnvelope = LlmPromptEnvelope("optimizer system", "optimizer user"),
+            promptOptimizationExplanation = "Makes the instruction precise",
+        )
+        session.recordRefinement(
+            beforeCommit = "feat: concise result",
+            afterCommit = "feat(ui): concise result",
+            rawPrompt = "Add the scope",
+            aiOptimizedPrompt = "",
+            confirmedPrompt = "Add the ui scope without changing facts",
+            promptEnvelope = secondEnvelope,
+        )
+        val snapshot = session.snapshot("feat(ui): final manual edit")
+
+        assertEquals("draft before generation", snapshot.originalCommit)
+        assertEquals("feat: initial AI result", snapshot.initialAiResult)
+        assertEquals("feat(ui): final manual edit", snapshot.finalCommit)
+        assertEquals(listOf(1, 2), snapshot.operations.map { it.sequence })
+        assertEquals("feat: initial AI result", snapshot.operations.first().beforeCommit)
+        assertEquals("feat: concise result", snapshot.operations.first().afterCommit)
+        assertEquals("Make it shorter", snapshot.operations.first().rawPrompt)
+        assertEquals("Use one concise imperative subject", snapshot.operations.first().aiOptimizedPrompt)
+        assertEquals(firstEnvelope, snapshot.operations.first().promptEnvelope)
+        assertEquals("optimizer system", snapshot.operations.first().promptOptimizationEnvelope?.systemPrompt)
+        assertEquals("Makes the instruction precise", snapshot.operations.first().promptOptimizationExplanation)
+        assertEquals(secondEnvelope, snapshot.operations.last().promptEnvelope)
     }
 }

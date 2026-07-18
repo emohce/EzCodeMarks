@@ -21,6 +21,48 @@ class LlmResponseAndContextPolicyTest {
     }
 
     @Test
+    fun `style proposal parser requires a prompt and a template`() {
+        val proposal = LlmResponseParser.parseStyleProposalOrNull(
+            """```json
+                {"prompt":" Keep it short ","template":"${'$'}{type}: ${'$'}{subject}","explanation":"Less repetition"}
+                ```
+            """.trimIndent(),
+        )
+
+        assertEquals("Keep it short", proposal?.prompt)
+        assertEquals("${'$'}{type}: ${'$'}{subject}", proposal?.template)
+        assertEquals(null, LlmResponseParser.parseStyleProposalOrNull("{\"prompt\":\"short\",\"template\":\"\"}"))
+    }
+
+    @Test
+    fun `prompt optimization parser validates trims and bounds the editable proposal`() {
+        val proposal = LlmResponseParser.parsePromptOptimizationOrNull(
+            """{"optimizedInstruction":"  Keep one imperative subject  ","explanation":"  Removes repetition  "}""",
+        )
+
+        assertEquals("Keep one imperative subject", proposal?.optimizedInstruction)
+        assertEquals("Removes repetition", proposal?.explanation)
+        assertEquals(
+            null,
+            LlmResponseParser.parsePromptOptimizationOrNull(
+                """{"optimizedInstruction":"   ","explanation":"empty"}""",
+            ),
+        )
+        assertEquals(
+            null,
+            LlmResponseParser.parsePromptOptimizationOrNull(
+                """{"optimizedInstruction":"${"x".repeat(4_001)}","explanation":"too long"}""",
+            ),
+        )
+        assertEquals(
+            null,
+            LlmResponseParser.parsePromptOptimizationOrNull(
+                """{"optimizedInstruction":"valid","explanation":"${"x".repeat(2_001)}"}""",
+            ),
+        )
+    }
+
+    @Test
     fun `sse decoder supports split chunks and multiple data lines`() {
         val decoder = SseDecoder()
 
