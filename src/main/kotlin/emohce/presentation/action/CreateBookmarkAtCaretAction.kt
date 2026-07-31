@@ -62,7 +62,7 @@ class CreateBookmarkAtCaretAction : AnAction() {
         val bookmark = BookmarkEditDialogUtil.editBookmark(
             project,
             BookmarkNode.Bookmark(
-                name = "New CodeMark",
+                name = "",
                 filePath = file.path,
                 line = line,
                 column = column

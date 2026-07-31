@@ -26,6 +26,8 @@ import javax.swing.JScrollPane
 import javax.swing.JTextArea
 import javax.swing.JTextField
 import javax.swing.KeyStroke
+import javax.swing.SwingUtilities
+import javax.swing.text.JTextComponent
 
 object BookmarkEditDialogUtil {
 
@@ -183,14 +185,9 @@ object BookmarkEditDialogUtil {
             // Disable default focus traversal for all fields
             field.focusTraversalKeysEnabled = false
 
-            // For JTextField, move caret to start on focus gain instead of selecting all
+            // Select the whole field after focus settles so keyboard and mouse focus behave consistently.
             if (field is JTextField) {
-                field.addFocusListener(object : java.awt.event.FocusAdapter() {
-                    override fun focusGained(e: java.awt.event.FocusEvent) {
-                        field.caretPosition = 0
-                        field.select(0, 0)
-                    }
-                })
+                setupSelectAllOnFocus(field)
 
                 // Add custom Tab navigation for JTextField
                 val nextField = if (index < fields.size - 1) fields[index + 1] else fields[0]
@@ -229,12 +226,7 @@ object BookmarkEditDialogUtil {
         // Disable default focus traversal to allow custom Tab handling
         textArea.focusTraversalKeysEnabled = false
 
-        // Move caret to start on focus gain instead of selecting all
-        textArea.addFocusListener(object : java.awt.event.FocusAdapter() {
-            override fun focusGained(e: java.awt.event.FocusEvent) {
-                textArea.caretPosition = 0
-            }
-        })
+        setupSelectAllOnFocus(textArea)
 
         // Tab: navigate to next field
         textArea.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, 0), "tabNext")
@@ -257,6 +249,16 @@ object BookmarkEditDialogUtil {
         textArea.actionMap.put("shiftEnter", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent) {
                 textArea.insert("\n", textArea.caretPosition)
+            }
+        })
+    }
+
+    private fun setupSelectAllOnFocus(component: JTextComponent) {
+        component.addFocusListener(object : java.awt.event.FocusAdapter() {
+            override fun focusGained(e: java.awt.event.FocusEvent) {
+                SwingUtilities.invokeLater {
+                    if (component.hasFocus()) component.selectAll()
+                }
             }
         })
     }

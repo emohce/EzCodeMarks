@@ -1893,7 +1893,7 @@ class BookmarkPanel(
                 val bookmark = BookmarkEditDialogUtil.editBookmark(
                     project,
                     BookmarkNode.Bookmark(
-                        name = "New CodeMark",
+                        name = "",
                         filePath = defaultPath.orEmpty(),
                         line = 0
                     )

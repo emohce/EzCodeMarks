@@ -393,7 +393,12 @@ class BookmarkHighlighterService(private val project: Project) {
                                     locator.bookmarkRepository.getInsertPositionAfterNode(entry.nodeId)
                                 }
                                 val (parentId, insertIndex) = pos ?: (entry.nodeId to null)
-                                val child = BookmarkNode.Bookmark(name = "New Bookmark", filePath = entry.filePath, line = line)
+                                val child = BookmarkEditDialogUtil.editBookmark(
+                                    project,
+                                    BookmarkNode.Bookmark(name = "", filePath = entry.filePath, line = line),
+                                    "Add Bookmark"
+                                ) ?: return@launch
+                                if (child.name.isBlank()) return@launch
                                 viewModel.processIntent(BookmarkIntent.CreateBookmark(parentId, child, insertIndex))
                             }
                         }
