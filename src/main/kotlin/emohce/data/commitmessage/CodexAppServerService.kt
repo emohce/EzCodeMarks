@@ -1,11 +1,13 @@
 package emohce.data.commitmessage
 
+import com.intellij.execution.configurations.PathEnvironmentVariableUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.util.SystemInfoRt
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -15,6 +17,8 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -50,6 +54,7 @@ internal interface CodexProviderGateway {
 
 internal interface CodexAccountSettingsGateway {
     fun executablePath(): String
+    fun resolvedExecutablePath(): String
     fun setExecutablePath(value: String, expectedValue: String)
     fun installationStatus(): CodexInstallationStatus
     fun account(indicator: ProgressIndicator? = null): CodexAppServerAccount
@@ -72,6 +77,7 @@ internal class CodexAppServerService(
         commonDataRoot,
         "account-operation.guard",
     ),
+    private val executableCandidates: () -> List<String> = ::defaultCodexExecutableCandidates,
 ) : CodexProviderGateway, CodexAccountSettingsGateway, Disposable {
     private val lock = Any()
     private val root = codexProviderRoot(commonDataRoot)
@@ -88,6 +94,11 @@ internal class CodexAppServerService(
     override fun executablePath(): String = synchronized(lock) {
         refreshMachineSettingsLocked()
         machineSettings.executablePath
+    }
+
+    override fun resolvedExecutablePath(): String = synchronized(lock) {
+        refreshMachineSettingsLocked()
+        resolvedExecutableLocked()
     }
 
     override fun setExecutablePath(value: String, expectedValue: String) {
@@ -422,13 +433,22 @@ internal class CodexAppServerService(
         }
     }
 
-    private fun resolvedExecutableLocked(): String = machineSettings.executablePath.ifBlank { "codex" }
+    private fun resolvedExecutableLocked(): String {
+        val configured = machineSettings.executablePath.trim()
+        if (configured.isNotBlank()) return configured
+        return executableCandidates().firstOrNull { it.isExistingExecutable() } ?: "codex"
+    }
+
+    private fun String.isExistingExecutable(): Boolean = runCatching {
+        val path = Path.of(this)
+        Files.exists(path, LinkOption.NOFOLLOW_LINKS) && Files.isExecutable(path)
+    }.getOrDefault(false)
 
     private fun validateExecutable(executable: String): CodexInstallationStatus {
         val processBuilder = try {
             prepareCodexIsolationRoot(commonDataRoot, root)
             codexVersionProcessBuilder(
-                ProcessBuilder(executable, "--version"),
+                ProcessBuilder(codexPlatformCommand(executable, listOf("--version"))),
                 root.resolve("home").toAbsolutePath().normalize(),
                 root.resolve("workspace").toAbsolutePath().normalize(),
             )
@@ -538,6 +558,32 @@ private fun defaultCodexStore(commonDataRoot: Path, fileName: String): CommitMes
             trustedRoot = commonDataRoot,
         )
     }
+
+private fun defaultCodexExecutableCandidates(): List<String> {
+    val userHome = runCatching { System.getProperty("user.home") }.getOrNull().orEmpty()
+    val isWindows = SystemInfoRt.isWindows
+    return buildList {
+        PathEnvironmentVariableUtil.findExecutableInPathOnAnyOS("codex")
+            ?.absolutePath
+            ?.let(::add)
+        if (isWindows) {
+            add("$userHome\\.codex\\bin\\codex.exe")
+            add("$userHome\\.codex\\bin\\codex.cmd")
+            add("$userHome\\.npm-global\\codex.cmd")
+            add("$userHome\\AppData\\Roaming\\npm\\codex.cmd")
+            add("$userHome\\AppData\\Local\\Programs\\codex\\codex.exe")
+            add("C:\\Program Files\\codex\\codex.exe")
+            add("C:\\Program Files (x86)\\codex\\codex.exe")
+        } else {
+            add("$userHome/.codex/bin/codex")
+            add("$userHome/.local/bin/codex")
+            add("$userHome/.npm-global/bin/codex")
+            add("/opt/homebrew/bin/codex")
+            add("/usr/local/bin/codex")
+            add("/usr/bin/codex")
+        }
+    }.distinct()
+}
 
 internal fun codexVersionProcessBuilder(processBuilder: ProcessBuilder, home: Path, cwd: Path): ProcessBuilder =
     configureIsolatedCodexProcess(processBuilder, home, cwd)

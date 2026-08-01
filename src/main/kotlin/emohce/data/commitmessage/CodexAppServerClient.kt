@@ -2,7 +2,7 @@ package emohce.data.commitmessage
 
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
-import kotlinx.serialization.json.Json
+import com.intellij.openapi.util.SystemInfoRt
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -12,14 +12,9 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import java.io.BufferedWriter
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.LinkedHashMap
@@ -103,33 +98,28 @@ internal fun interface CodexAppServerProcessFactory {
                 cwd,
             )
                 .redirectError(ProcessBuilder.Redirect.PIPE)
-            val process = processBuilder.start()
-            Thread(
-                {
-                    runCatching {
-                        process.errorStream.use { errorStream ->
-                            val buffer = ByteArray(8_192)
-                            while (errorStream.read(buffer) >= 0) {
-                                // Stderr is intentionally drained without retaining account or request data.
-                            }
-                        }
-                    }
-                },
-                "EzCodeMark Codex App Server stderr",
-            ).apply {
-                isDaemon = true
-                start()
-            }
-            process
+            processBuilder.start()
         }
     }
 }
 
-internal fun codexAppServerCommand(executable: String): List<String> = buildList {
-    addAll(listOf(executable, "app-server", "--stdio", "--strict-config"))
+internal fun codexAppServerCommand(executable: String): List<String> = codexPlatformCommand(executable, buildList {
+    addAll(listOf("app-server", "--stdio", "--strict-config"))
     addAll(listOf("-c", "web_search=\"disabled\""))
     addAll(listOf("-c", "mcp_servers={}"))
     CODEX_DISABLED_TOOL_FEATURES.forEach { feature -> addAll(listOf("--disable", feature)) }
+})
+
+internal fun codexPlatformCommand(
+    executable: String,
+    arguments: List<String>,
+    windows: Boolean = SystemInfoRt.isWindows,
+): List<String> = if (
+    windows && (executable.endsWith(".cmd", ignoreCase = true) || executable.endsWith(".bat", ignoreCase = true))
+) {
+    listOf("cmd.exe", "/d", "/s", "/c", executable) + arguments
+} else {
+    listOf(executable) + arguments
 }
 
 private fun prepareIsolatedDirectory(path: Path) {
@@ -245,10 +235,8 @@ internal class CodexAppServerClient(
     cwd: Path,
     private val version: String,
 ) : AutoCloseable {
-    private val json = Json { ignoreUnknownKeys = true }
     private val home = home.normalize()
     private val cwd = cwd.normalize()
-    private val requestIds = AtomicLong(1)
     private val permissionProfileId = "$CODEX_PERMISSION_PROFILE_PREFIX-${UUID.randomUUID()}"
     private val closed = AtomicBoolean()
     private val lifecycleLock = Any()
@@ -292,6 +280,7 @@ internal class CodexAppServerClient(
             loginId = result.requiredString("loginId"),
             authUrl = result.requiredString("authUrl"),
         )
+        activeSession.pendingLoginIds += login.loginId
         activeSession.loginResults.computeIfAbsent(login.loginId) { CompletableFuture() }
         return login
     }
@@ -309,6 +298,7 @@ internal class CodexAppServerClient(
             verificationUrl = result.requiredString("verificationUrl"),
             userCode = result.requiredString("userCode"),
         )
+        activeSession.pendingLoginIds += login.loginId
         activeSession.loginResults.computeIfAbsent(login.loginId) { CompletableFuture() }
         return login
     }
@@ -485,12 +475,9 @@ internal class CodexAppServerClient(
             activeSession.turns.values.forEach { interruptBestEffort(activeSession, it) }
         }
 
-        markTerminated(
-            activeSession,
-            failure(CodexAppServerErrorKind.CLOSED, "Codex App Server client is closed"),
-        )
-        runCatching { activeSession.writer.close() }
-        stopProcess(activeSession.process)
+        val closeError = failure(CodexAppServerErrorKind.CLOSED, "Codex App Server client is closed")
+        markTerminated(activeSession, closeError)
+        activeSession.connection.close(forcibly = false, failure = closeError)
     }
 
     private fun request(
@@ -502,7 +489,7 @@ internal class CodexAppServerClient(
     private fun activeSession(): Session = synchronized(lifecycleLock) {
         if (closed.get()) throw failure(CodexAppServerErrorKind.CLOSED, "Codex App Server client is closed")
         session?.let { current ->
-            if (!current.terminated.get() && current.process.isAlive) return@synchronized current
+            if (!current.terminated.get() && current.connection.isAlive()) return@synchronized current
             terminateUnexpectedly(current)
         }
 
@@ -516,51 +503,53 @@ internal class CodexAppServerClient(
     }
 
     private fun startSession(): Session {
-        val process = try {
-            processFactory.start(executable, home, cwd)
-        } catch (_: Exception) {
-            throw failure(CodexAppServerErrorKind.PROCESS, "Codex App Server could not be started")
-        }
         hasStartedProcess = true
-        val startedSession = try {
-            Session(
-                process = process,
-                writer = BufferedWriter(OutputStreamWriter(process.outputStream, StandardCharsets.UTF_8)),
-            )
-        } catch (_: Exception) {
-            runCatching { process.destroy() }
-            throw failure(CodexAppServerErrorKind.PROCESS, "Codex App Server could not be started")
+        val sessionReference = java.util.concurrent.atomic.AtomicReference<Session?>()
+        val listener = object : CodexAppServerConnectionListener {
+            override fun onNotification(method: String, params: JsonObject) {
+                sessionReference.get()?.let { routeNotification(it, method, params) }
+            }
+
+            override fun onServerRequest(request: CodexServerRequest) {
+                sessionReference.get()?.let { rejectServerRequest(it, request) } ?: request.error()
+            }
+
+            override fun onClosed(error: CodexAppServerException) {
+                sessionReference.get()?.let { connectionClosed(it, error) }
+            }
         }
+        val connection = CodexAppServerConnection.open(
+            executable = executable,
+            cwd = cwd,
+            environment = emptyMap(),
+            listener = listener,
+            processFactory = CodexAppServerConnectionProcessFactory { requestedExecutable, _, _ ->
+                processFactory.start(requestedExecutable, home, cwd)
+            },
+        )
+        val startedSession = Session(connection)
+        sessionReference.set(startedSession)
         session = startedSession
-        Thread(
-            { readLoop(startedSession) },
-            "EzCodeMark Codex App Server stdout",
-        ).apply {
-            isDaemon = true
-            start()
-        }
 
         try {
-            val initializeResult = requestOnSession(
-                startedSession,
-                method = "initialize",
-                params = buildJsonObject {
-                    putJsonObject("clientInfo") {
-                        put("name", "ezcodemark_jetbrains")
-                        put("title", "EzCodeMark JetBrains Commit Message Provider")
-                        put("version", version)
-                    }
-                    putJsonObject("capabilities") { put("experimentalApi", true) }
-                },
-            ).asObject() ?: protocolFailure()
-            val effectiveHome = initializeResult.string("codexHome")
-                ?.let { runCatching { Path.of(it).toAbsolutePath().normalize() }.getOrNull() }
-                ?: isolationFailure()
-            if (effectiveHome != home.toAbsolutePath().normalize()) isolationFailure()
-            writeMessage(startedSession, buildJsonObject { put("method", "initialized") })
+            connection.initialize(
+                CodexAppServerClientIdentity(
+                    name = "ezcodemark_jetbrains",
+                    title = "EzCodeMark JetBrains Commit Message Provider",
+                    version = version,
+                ),
+            ) { initializeResult ->
+                val effectiveHome = initializeResult.string("codexHome")
+                    ?.let { runCatching { Path.of(it).toAbsolutePath().normalize() }.getOrNull() }
+                    ?: isolationFailure()
+                if (effectiveHome != home.toAbsolutePath().normalize()) isolationFailure()
+            }
             return startedSession
         } catch (error: RuntimeException) {
-            terminateUnexpectedly(startedSession)
+            terminateForSecurity(startedSession, error as? CodexAppServerException ?: failure(
+                CodexAppServerErrorKind.PROTOCOL,
+                "Codex App Server returned an invalid response",
+            ))
             throw error
         }
     }
@@ -575,61 +564,13 @@ internal class CodexAppServerClient(
         if (activeSession.terminated.get()) {
             throw failure(CodexAppServerErrorKind.PROCESS, "Codex App Server terminated unexpectedly")
         }
-        val id = requestIds.getAndIncrement()
-        val future = CompletableFuture<JsonElement>()
-        val pending = PendingRequest(method, future)
-        activeSession.pending[id] = pending
-        try {
-            writeMessage(
-                activeSession,
-                buildJsonObject {
-                    put("id", id)
-                    put("method", method)
-                    put("params", params)
-                },
-            )
-            return awaitResponse(activeSession, future, indicator)
-        } catch (error: ProcessCanceledException) {
-            onCanceled()
-            throw error
-        } finally {
-            activeSession.pending.remove(id, pending)
-        }
-    }
-
-    private fun awaitResponse(
-        activeSession: Session,
-        future: CompletableFuture<JsonElement>,
-        indicator: ProgressIndicator?,
-    ): JsonElement {
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CONTROL_REQUEST_TIMEOUT_MS)
-        while (true) {
-            indicator?.checkCanceled()
-            val remaining = deadline - System.nanoTime()
-            if (remaining <= 0) {
-                val error = failure(CodexAppServerErrorKind.REQUEST, "Codex App Server request timed out")
-                terminateForSecurity(activeSession, error)
-                throw error
-            }
-            try {
-                return future.get(
-                    minOf(
-                        RESPONSE_POLL_MS,
-                        TimeUnit.NANOSECONDS.toMillis(remaining).coerceAtLeast(1),
-                    ),
-                    TimeUnit.MILLISECONDS,
-                )
-            } catch (_: TimeoutException) {
-                if (activeSession.terminated.get()) {
-                    throw failure(CodexAppServerErrorKind.PROCESS, "Codex App Server terminated unexpectedly")
-                }
-            } catch (error: InterruptedException) {
-                Thread.currentThread().interrupt()
-                throw failure(CodexAppServerErrorKind.REQUEST, "Codex App Server request was interrupted")
-            } catch (error: ExecutionException) {
-                throw unwrap(error)
-            }
-        }
+        return activeSession.connection.request(
+            method = method,
+            params = params,
+            timeoutMillis = CONTROL_REQUEST_TIMEOUT_MS,
+            indicator = indicator,
+            onCanceled = onCanceled,
+        )
     }
 
     private fun <T> awaitFuture(
@@ -707,71 +648,7 @@ internal class CodexAppServerClient(
         else -> failure(CodexAppServerErrorKind.PROTOCOL, "Codex App Server returned an invalid response")
     }
 
-    private fun readLoop(activeSession: Session) {
-        try {
-            InputStreamReader(activeSession.process.inputStream, StandardCharsets.UTF_8).buffered().use { reader ->
-                while (true) {
-                    val line = readJsonLine(activeSession, reader) ?: break
-                    if (line.isBlank()) continue
-                    val message = try {
-                        json.parseToJsonElement(line) as? JsonObject
-                    } catch (_: Exception) {
-                        null
-                    } ?: protocolFailure(activeSession)
-                    routeMessage(activeSession, message)
-                }
-            }
-        } catch (_: Exception) {
-            // The fixed process failure below intentionally excludes stream and protocol details.
-        } finally {
-            if (!activeSession.terminated.get()) terminateUnexpectedly(activeSession)
-        }
-    }
-
-    private fun readJsonLine(activeSession: Session, reader: java.io.Reader): String? {
-        val line = StringBuilder()
-        while (true) {
-            val next = reader.read()
-            if (next < 0) return line.takeIf { it.isNotEmpty() }?.toString()
-            if (next == '\n'.code) return line.toString().removeSuffix("\r")
-            if (line.length >= MAX_JSONL_CHARS) protocolFailure(activeSession)
-            line.append(next.toChar())
-        }
-    }
-
-    private fun routeMessage(activeSession: Session, message: JsonObject) {
-        val id = message["id"].requestId()
-        if (id != null && (message.containsKey("result") || message.containsKey("error"))) {
-            if (message.containsKey("result") == message.containsKey("error")) protocolFailure(activeSession)
-            val pending = activeSession.pending.remove(id)
-            if (pending == null) {
-                if (activeSession.bestEffortRequestIds.remove(id)) return
-                protocolFailure(activeSession)
-            }
-            if (message.containsKey("error")) {
-                pending.future.completeExceptionally(
-                    failure(CodexAppServerErrorKind.REQUEST, "Codex App Server request failed"),
-                )
-            } else {
-                val result = message["result"] ?: JsonNull
-                if (pending.method == "account/login/start") {
-                    result.asObject().string("loginId")?.let(activeSession.pendingLoginIds::add)
-                }
-                pending.future.complete(result)
-            }
-            return
-        }
-
-        if ((message.containsKey("result") || message.containsKey("error")) && id == null) {
-            protocolFailure(activeSession)
-        }
-        val method = message.string("method") ?: protocolFailure(activeSession)
-        val serverRequestId = message["id"] as? JsonPrimitive
-        if (serverRequestId != null) {
-            rejectServerRequest(activeSession, serverRequestId, method)
-            return
-        }
-        val params = message["params"].asObject() ?: protocolFailure(activeSession)
+    private fun routeNotification(activeSession: Session, method: String, params: JsonObject) {
         if (activeSession.notificationCount.incrementAndGet() > MAX_SESSION_NOTIFICATIONS) {
             terminateForSecurity(
                 activeSession,
@@ -1000,67 +877,28 @@ internal class CodexAppServerClient(
 
     private fun sendRequestBestEffort(activeSession: Session, method: String, params: JsonElement) {
         if (activeSession.terminated.get()) return
-        val id = requestIds.getAndIncrement()
-        activeSession.bestEffortRequestIds += id
-        runCatching {
-            writeMessage(
-                activeSession,
-                buildJsonObject {
-                    put("id", id)
-                    put("method", method)
-                    put("params", params)
-                },
-            )
-        }.onFailure { activeSession.bestEffortRequestIds -= id }
-    }
-
-    private fun writeMessage(activeSession: Session, message: JsonObject) {
-        try {
-            synchronized(activeSession.writeLock) {
-                if (activeSession.terminated.get()) {
-                    throw failure(
-                        CodexAppServerErrorKind.PROCESS,
-                        "Codex App Server terminated unexpectedly",
-                    )
-                }
-                activeSession.writer.write(message.toString())
-                activeSession.writer.newLine()
-                activeSession.writer.flush()
-            }
-        } catch (error: CodexAppServerException) {
-            throw error
-        } catch (_: Exception) {
-            terminateUnexpectedly(activeSession)
-            throw failure(CodexAppServerErrorKind.PROCESS, "Codex App Server terminated unexpectedly")
-        }
+        activeSession.connection.requestBestEffort(method, params)
     }
 
     private fun terminateUnexpectedly(activeSession: Session) {
-        markTerminated(
-            activeSession,
-            failure(CodexAppServerErrorKind.PROCESS, "Codex App Server terminated unexpectedly"),
-        )
-        runCatching { activeSession.writer.close() }
-        destroyProcessTree(activeSession.process, forcibly = false)
+        val error = failure(CodexAppServerErrorKind.PROCESS, "Codex App Server terminated unexpectedly")
+        markTerminated(activeSession, error)
+        activeSession.connection.close(forcibly = false, failure = error)
         synchronized(lifecycleLock) {
             if (session === activeSession) session = null
         }
     }
 
-    private fun rejectServerRequest(activeSession: Session, id: JsonPrimitive, method: String) {
-        runCatching {
-            writeMessage(
-                activeSession,
-                buildJsonObject {
-                    put("id", id)
-                    putJsonObject("error") {
-                        put("code", -32_601)
-                        put("message", "EzCodeMark does not permit server-initiated operations")
-                    }
-                },
-            )
+    private fun connectionClosed(activeSession: Session, error: CodexAppServerException) {
+        markTerminated(activeSession, error)
+        synchronized(lifecycleLock) {
+            if (session === activeSession) session = null
         }
-        val kind = if (method in DISALLOWED_SERVER_REQUESTS) {
+    }
+
+    private fun rejectServerRequest(activeSession: Session, request: CodexServerRequest) {
+        request.error(message = "EzCodeMark does not permit server-initiated operations")
+        val kind = if (request.method in DISALLOWED_SERVER_REQUESTS) {
             CodexAppServerErrorKind.TOOL_USE
         } else {
             CodexAppServerErrorKind.PROTOCOL
@@ -1070,8 +908,7 @@ internal class CodexAppServerClient(
 
     private fun terminateForSecurity(activeSession: Session, error: CodexAppServerException) {
         markTerminated(activeSession, error)
-        runCatching { activeSession.writer.close() }
-        destroyProcessTree(activeSession.process, forcibly = true)
+        activeSession.connection.close(forcibly = true, failure = error)
         synchronized(lifecycleLock) {
             if (session === activeSession) session = null
         }
@@ -1079,49 +916,10 @@ internal class CodexAppServerClient(
 
     private fun markTerminated(activeSession: Session, error: CodexAppServerException) {
         if (!activeSession.terminated.compareAndSet(false, true)) return
-        activeSession.pending.values.forEach { it.future.completeExceptionally(error) }
-        activeSession.pending.clear()
-        activeSession.bestEffortRequestIds.clear()
         activeSession.turns.values.forEach { it.fail(error) }
         activeSession.loginResults.values.forEach { it.completeExceptionally(error) }
         activeSession.loginResults.clear()
         activeSession.pendingLoginIds.clear()
-    }
-
-    private fun stopProcess(process: Process) {
-        var interrupted = false
-        var exited = try {
-            process.waitFor(GRACEFUL_CLOSE_MS, TimeUnit.MILLISECONDS)
-        } catch (_: InterruptedException) {
-            interrupted = true
-            false
-        }
-        if (!exited) {
-            destroyProcessTree(process, forcibly = false)
-            exited = try {
-                process.waitFor(DESTROY_WAIT_MS, TimeUnit.MILLISECONDS)
-            } catch (_: InterruptedException) {
-                interrupted = true
-                false
-            }
-        }
-        if (!exited) {
-            destroyProcessTree(process, forcibly = true)
-            try {
-                process.waitFor(FORCE_WAIT_MS, TimeUnit.MILLISECONDS)
-            } catch (_: InterruptedException) {
-                interrupted = true
-            }
-        }
-        if (interrupted) Thread.currentThread().interrupt()
-    }
-
-    private fun destroyProcessTree(process: Process, forcibly: Boolean) {
-        val handles = runCatching { process.toHandle().descendants().toList().asReversed() }.getOrDefault(emptyList())
-        handles.forEach { handle -> runCatching { if (forcibly) handle.destroyForcibly() else handle.destroy() } }
-        runCatching {
-            if (forcibly) process.destroyForcibly() else if (process.isAlive) process.destroy()
-        }
     }
 
     private fun parseModel(model: JsonObject?): CodexAppServerModel? {
@@ -1153,8 +951,12 @@ internal class CodexAppServerClient(
     )
 
     private fun protocolFailure(activeSession: Session): Nothing {
-        terminateUnexpectedly(activeSession)
-        protocolFailure()
+        val error = failure(
+            CodexAppServerErrorKind.PROTOCOL,
+            "Codex App Server returned an invalid response",
+        )
+        terminateForSecurity(activeSession, error)
+        throw error
     }
 
     private fun isolationFailure(): Nothing = throw failure(
@@ -1180,7 +982,6 @@ internal class CodexAppServerClient(
 
     private fun JsonElement?.asObject(): JsonObject? = this as? JsonObject
     private fun JsonElement?.asArray(): JsonArray? = this as? JsonArray
-    private fun JsonElement?.requestId(): Long? = (this as? JsonPrimitive)?.longOrNull
     private fun JsonObject?.string(key: String): String? =
         (this?.get(key) as? JsonPrimitive)?.contentOrNull
 
@@ -1192,24 +993,13 @@ internal class CodexAppServerClient(
     private fun JsonObject?.requiredString(key: String): String =
         string(key)?.takeIf(String::isNotBlank) ?: protocolFailure()
 
-    private class Session(
-        val process: Process,
-        val writer: BufferedWriter,
-    ) {
-        val writeLock = Any()
-        val pending = ConcurrentHashMap<Long, PendingRequest>()
-        val bestEffortRequestIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
+    private class Session(val connection: CodexAppServerConnection) {
         val notificationCount = AtomicLong()
         val pendingLoginIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
         val loginResults = ConcurrentHashMap<String, CompletableFuture<CodexAppServerLoginCompleted>>()
         val turns = ConcurrentHashMap<String, TurnState>()
         val terminated = AtomicBoolean()
     }
-
-    private data class PendingRequest(
-        val method: String,
-        val future: CompletableFuture<JsonElement>,
-    )
 
     private class TurnState(val threadId: String, private val maxOutputChars: Int) {
         val result = CompletableFuture<String>()
@@ -1320,7 +1110,6 @@ internal class CodexAppServerClient(
         private const val CONTROL_REQUEST_TIMEOUT_MS = 30_000L
         private const val LOGIN_TIMEOUT_MS = 5 * 60_000L
         private const val MAX_TURN_SECONDS = 120L
-        private const val MAX_JSONL_CHARS = 4_000_000
         private const val MAX_ASSISTANT_OUTPUT_CHARS = 1_000_000
         private const val MAX_CHARS_PER_TOKEN = 8
         private const val MAX_TURN_ITEMS = 256
@@ -1329,9 +1118,6 @@ internal class CodexAppServerClient(
         private const val MAX_MODELS = 10_000
         private const val MAX_MODEL_CURSOR_CHARS = 4_096
         private const val MAX_MODEL_RETAINED_CHARS = 1_000_000L
-        private const val GRACEFUL_CLOSE_MS = 750L
-        private const val DESTROY_WAIT_MS = 500L
-        private const val FORCE_WAIT_MS = 250L
 
         private fun outputCharacterLimit(maxOutputTokens: Int?): Int = maxOutputTokens
             ?.coerceAtLeast(1)

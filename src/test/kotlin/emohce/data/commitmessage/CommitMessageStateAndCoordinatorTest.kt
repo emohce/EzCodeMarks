@@ -30,7 +30,9 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermission
 import java.util.UUID
 
 class CommitMessageStateAndCoordinatorTest {
@@ -458,6 +460,66 @@ class CommitMessageStateAndCoordinatorTest {
 
         assertEquals(CodexAppServerErrorKind.PROCESS, error.kind)
         assertEquals(future, (store.read() as CommitMessagePortableReadResult.Found).envelope)
+    }
+
+    @Test
+    fun `Codex executable is auto-detected from candidate list`() {
+        val root = tempDir.resolve("codex-autodetect")
+        val fakeCodex = root.resolve("fake-codex")
+        Files.createDirectories(fakeCodex.parent)
+        Files.writeString(fakeCodex, "#!/bin/sh\necho \"codex-cli 0.144.5\"\n")
+        Files.getFileAttributeView(fakeCodex, java.nio.file.attribute.PosixFileAttributeView::class.java)
+            ?.setPermissions(setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE))
+
+        val service = CodexAppServerService(
+            root,
+            null,
+            null,
+            executableCandidates = { listOf(fakeCodex.toString(), "codex") },
+        )
+
+        assertEquals(fakeCodex.toString(), service.resolvedExecutablePath())
+        val status = service.installationStatus()
+        assertEquals(fakeCodex.toString(), status.executable)
+        assertTrue(status.available)
+        assertEquals("0.144.5", status.version)
+        service.dispose()
+    }
+
+    @Test
+    fun `Codex executable falls back to PATH when no candidate exists`() {
+        val root = tempDir.resolve("codex-fallback")
+        val service = CodexAppServerService(
+            root,
+            null,
+            null,
+            executableCandidates = { listOf(root.resolve("missing-codex").toString()) },
+        )
+
+        assertEquals("codex", service.resolvedExecutablePath())
+        service.dispose()
+    }
+
+    @Test
+    fun `configured Codex executable overrides auto-detection`() {
+        val root = tempDir.resolve("codex-override")
+        val autoDetected = root.resolve("auto-codex")
+        val configured = root.resolve("configured-codex")
+        Files.createDirectories(autoDetected.parent)
+        Files.writeString(autoDetected, "#!/bin/sh\necho \"codex-cli 0.144.5\"\n")
+        Files.getFileAttributeView(autoDetected, java.nio.file.attribute.PosixFileAttributeView::class.java)
+            ?.setPermissions(setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE))
+
+        val service = CodexAppServerService(
+            root,
+            null,
+            null,
+            executableCandidates = { listOf(autoDetected.toString()) },
+        )
+        service.setExecutablePath(configured.toString(), "")
+
+        assertEquals(configured.toString(), service.resolvedExecutablePath())
+        service.dispose()
     }
 
     @Test
