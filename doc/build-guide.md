@@ -26,6 +26,14 @@ gradlew.bat runIde
 
 `runIde` 会启动安装当前插件的沙盒 IDE。提交信息助手需分别人工检查非模态 Commit ToolWindow 与传统 Commit Dialog。
 
+### Computer Use smoke
+
+Codex 驱动的 macOS UI smoke 不把无法稳定附着的 bare `runIde`/Java 进程视为运行时证据。先执行 `./gradlew prepareSandbox`，再使用真实安装的 IntelliJ app bundle，通过独立 `idea.properties` 将 config、system、log 和 plugins 定向到 ignored 测试目录与实际 Gradle 插件沙箱，并打开 disposable Git 项目。完整启动、交互、断言、清理与失败回退以[已验证的 IntelliJ Computer Use 通路](../vibe/knowledge/computer-use/jetbrains-plugin-smoke.md#L1)为准。
+
+`runIde` 仍可用于人工开发验证；两条通路都不得复用正常用户设置、真实 Codex 账号或真实 Commit 副作用。
+
+每次 Computer Use smoke 都必须在首个 UI 方法前创建项目级 [`computer-use-session/v1` 记录](../vibe/knowledge/computer-use/sessions/README.md#L1)，并在下一个 UI 方法前写入上一个方法的脱敏输入、前后状态、结果、断言、影响和决策。最终 route/error memory 不能替代逐调用 session 账本。
+
 ## 测试与完整验证
 
 按以下顺序串行执行：

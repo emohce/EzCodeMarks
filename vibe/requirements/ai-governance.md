@@ -25,6 +25,6 @@ Parent Spec: [SPEC-260710-1636 W62](../../../CzzProj/CodeNote/vibe/specs/260710/
 
 ## Verification And Gates
 
-- 本地接纳至少要求 EzCodeMark project audit、requirement/current route links、scoped diff hygiene 和 CodeNote 父任务的 working active-version tuple 通过。
+- 本地接纳至少要求 EzCodeMark project audit、requirement/current route links、scoped diff hygiene 和 CodeNote 父任务的 working active-version tuple 通过；该 tuple 必须实际读取本 Manifest 的 R1、`canonical_members` 及每个 canonical member 版本，不能只接受次目标语法。
 - CodeNote 的文档同步回执不能证明本仓库内容；EzCodeMark 的 project audit、link、diff 和 readback 必须在父任务 closeout 时重新执行。
 - R1 未授权外部 Codex/OpenCode config、Home/Hook/Automation、应用业务、DB、发布、凭据/权限、stage、commit 或 push。

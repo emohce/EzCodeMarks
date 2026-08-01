@@ -1,5 +1,9 @@
 # Change Log
 
+- 2026-08-01: Completed IntelliJ 2026.1 runtime hardening for Environment Actions/Codex Chat: project Configurables expose platform constructors, approval stays inline and stoppable, ToolWindow settings buttons select typed Configurables, and Prepare Commit discovers both focused/modal and visible non-modal Commit editors without owning Git side effects.
+- 2026-07-31: Added schema-v2 Environment Actions with machine-local shared definitions, project-private current selection, ten stable Keymap slots, persistent display order, optimistic cross-IDE merge/conflict handling, cancellable platform-managed Shell/Script/Codex one-shot processes, four-language resources, and native Configurable/ToolWindow lifecycle integration.
+- 2026-07-31: Replaced automatic Git staging/commit with IDE-native Prepare Commit message insertion, and replaced concatenated one-shot output with a real ephemeral Codex App Server thread supporting multi-turn streaming, inherited CLI permissions, explicit approvals, interruption, permission badges, and separate interactive versus isolated Commit Provider identities.
+
 - 2026-07-17: Added official Codex App Server ChatGPT subscription profiles, an isolated shared-machine Codex account, structured ephemeral no-tool turns, account-generation-aware source consent, and browser/device-code account controls without exposing OAuth tokens.
 - 2026-07-17: Added conflict-safe dual-carrier global synchronization, bounded global/project extra instructions, VCS-eligible shared project templates/styles/defaults, and workspace-only project profiles, credentials, selections, drafts, and consent.
 - 2026-07-17: Fixed LLM Profile editing from both the toolbar and row double-click, mounted the actual editable model ComboBox editor, stabilized immediate search/selection and popup behavior, re-filtered models returned after typing, and preserved selected or custom model IDs through dialog confirmation.

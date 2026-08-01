@@ -178,3 +178,13 @@ open_questions: []
 - Result: r7 implementation and verification are complete. The exact local direct verifier matrix and the recovered canonical Gradle verifier task both passed; the prior metadata-resolution failure remains a verified conditional fallback route, not an active blocker.
 - Unavailable dimension: model/token counters remain `usage unavailable`.
 - Persistence: Codex isolation/preconnect, bounded model pagination, durable machine-generation repair, portable quarantine recovery, Configurable Apply resnapshot, and Plugin Verifier fallback routes are promoted to [project error memory](../../../knowledge/error-memory/README.md); no global rule/template propagation is needed.
+
+## r8 Compatible Supplement — Codex Settings And Native Commit Boundary
+
+This supplement preserves the accepted r7 Commit Message Provider architecture and changes only its integration boundary with the new [Environment Actions / Codex Chat task](../../260731/1720-environment-actions-codex-chat/spec.md).
+
+- **Codex settings transaction:** the executable path is owned by a native `Codex CLI` Configurable and follows Apply/Reset/Cancel. Account login/logout remains an immediate, confirmed credential operation that Cancel cannot reverse. The page identifies the normal Interactive CLI and the EzCodeMarks-isolated Commit Provider separately.
+- **Bookmark decoupling:** the bookmark ToolWindow no longer owns a Codex settings button or dialog. Provider settings and Chat status open the registered Configurable through `ShowSettingsUtil`; bookmark state, selection and persistence remain uninvolved.
+- **Native Commit integration:** `PREPARE_COMMIT` may prepare text for the IDE Commit editor through `CheckinProject`, the current commit-message control, or a short-lived one-shot provider. It cannot select files, stage changes, run raw Git, or create the final commit. This is an Environment Action integration and does not replace the four accepted Commit Message Actions.
+
+Compatibility invariants remain unchanged: `CodexAppServerClient.complete()`, the four Commit Message Action IDs, the isolated account/home, effective permission validation, tool rejection and ephemeral strict-provider turns retain r7 behavior. Detailed implementation and verification evidence is owned by the linked task rather than duplicated here.

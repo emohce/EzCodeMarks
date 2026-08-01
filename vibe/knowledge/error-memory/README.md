@@ -23,6 +23,15 @@ Use this directory for reusable, verified failure patterns.
 - [Codex machine auth-generation repair](codex-machine-auth-generation-repair.md)
 - [Portable quarantine revision-only recovery](portable-quarantine-revision-only-recovery.md)
 - [IntelliJ Configurable Apply stale baseline](intellij-configurable-apply-stale-baseline.md)
+- [Project shared settings unsupported schema](project-shared-settings-unsupported-schema.md)
+- [Environment Action legacy random revision CAS loop](environment-action-legacy-random-revision-cas-loop.md)
+- [Snapshot process descendants before closing stdin](process-tree-snapshot-before-stdin-close.md)
+- [IntelliJ project Configurable requires a Java-visible constructor](intellij-project-configurable-java-constructor.md)
+- [IntelliJ ToolWindow approvals must remain inline and stoppable](intellij-toolwindow-inline-approval.md)
+- [Open IntelliJ Settings by Configurable class](intellij-show-settings-configurable-class.md)
+- [Discover the native Commit editor across focused and non-modal surfaces](intellij-commit-editor-discovery.md)
+- [IntelliJ Computer Use smoke must use a real app shell](intellij-plugin-smoke-bare-runide-host.md)
+- [IntelliJ Swing popup can collapse the accessibility bridge](intellij-swing-popup-accessibility-bridge-loss.md)
 
 ## Rules
 

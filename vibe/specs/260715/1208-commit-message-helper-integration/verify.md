@@ -141,3 +141,9 @@ The earlier live run exposed the IDEA 2025.3 non-modal place `ChangesView.Commit
 - Global/project entry and Controlled documentation route: applied.
 - Sidecar: main thread for r7 final review/closeout; prior read-only review evidence remained subordinate to App Root.
 - High-risk gates: remained closed.
+
+## r8 Compatible Supplement Verification
+
+The Environment Actions / Codex Chat implementation reran the complete Commit Provider App Server regression suite after extracting the shared policy-free transport. The strict caller still owns its isolated process environment, permission profile validation, tool rejection, bounded output and terminal cancellation. The new Chat caller does not reuse or relax those policies.
+
+Current r8 results are authoritative in [the separate verification record](../../260731/1720-environment-actions-codex-chat/verify.md). Its final 309-test, three-target and local fake-runtime gates pass, including typed Codex Settings navigation and native Commit Replace without Git side effects. This addendum records compatibility only; the accepted r7 counts and verifier verdicts above remain historical and unchanged.

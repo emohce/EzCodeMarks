@@ -127,3 +127,13 @@ Documentation level: `controlled`
 - No tracked implementation residue remains. `java_pid59324.hprof` was deleted after explicit user authorization, and the repository tree contains no `.hprof` file. Generated build/verifier reports remain ignored local evidence.
 - Portable ancestry intentionally retains 32 revision IDs; an older branch beyond that horizon fails safe as an explicit conflict instead of being silently overwritten.
 - Filesystem path checks and `NOFOLLOW_LINKS` cannot eliminate every parent/lock symlink TOCTOU against a hostile same-account process without a versioned native/descriptor-relative storage redesign. This remains outside the supported cooperative local-process threat model.
+
+## r8 Compatible Supplement Journal
+
+| Event | Date | Change | Result |
+| --- | --- | --- | --- |
+| EVT-037 | 2026-07-31 | User approved native Commit ownership, separated interactive/isolated Codex identities, and native Configurable semantics | Existing r7 acceptance retained; new Controlled Environment Actions / Codex Chat owner opened |
+| EVT-038 | 2026-07-31 | Codex settings transaction, bookmark decoupling and IDE-native Prepare Commit integration implemented | Strict `CodexAppServerClient.complete()` regressions and current full suite pass; final evidence is tracked in the linked task |
+| EVT-039 | 2026-08-01 | Local fake-runtime acceptance resumed after unlock and exposed constructor, settings navigation, approval-modality and non-modal Commit-editor discovery gaps | All four gaps fixed and regressed; native Commit Replace and strict-provider compatibility pass without login, inference, staging or Commit side effects |
+
+Current owner: [Environment Actions / Codex Chat task ledger](../../260731/1720-environment-actions-codex-chat/tasks.md). No r7 event or acceptance record was rewritten.

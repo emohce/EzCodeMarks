@@ -60,3 +60,11 @@ Documentation level: `controlled`
 
 - The feature can be reviewed from [technical details](../../../knowledge/technical-details.md) and [user guide](../../../../doc/USER_GUIDE.md).
 - Generated build and verifier reports remain ignored local evidence. The previously ignored heap dump was deleted after user authorization; no tracked cleanup remains.
+
+## r8 Compatible Supplement Handoff
+
+- r7 remains `complete / accepted`; its isolated Commit Provider behavior and four Commit Message Actions are unchanged.
+- The native `Codex CLI` Configurable now owns executable Apply/Reset/Cancel and clearly separates normal Interactive CLI identity from the isolated Provider identity. Login/logout is confirmed, immediate and isolated-account-only.
+- The bookmark ToolWindow no longer owns Codex settings UI. Registered settings pages are opened through the platform settings API.
+- Environment Actions may prepare text for the native Commit UI, but never selects, stages or commits files and never invokes raw Git.
+- The implementation, final 309-test count, compatibility matrix and accepted local fake-runtime evidence are handed off through the [Environment Actions / Codex Chat task](../../260731/1720-environment-actions-codex-chat/handoff.md). No r8 runtime gate remains.

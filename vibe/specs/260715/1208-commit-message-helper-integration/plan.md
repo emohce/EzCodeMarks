@@ -107,3 +107,13 @@ Revision 7 performs no real login, inference, source-context transmission, logou
 - The initial Gradle `verifyPlugin` attempt could not resolve dynamic 2026.2 metadata, so the verified direct CLI fallback used exact cached distributions. The metadata route later recovered and the canonical Gradle task passed the final artifact; the fallback remains documented for future matching failures.
 - No rule/template propagation, DB/SQL, deployment, publish, credential disclosure, real login/logout/inference/source-context provider request, or external write is part of r7 acceptance.
 - The 2.6GB OOM heap dump was deleted after explicit user authorization and is no longer a residual item.
+
+## r8 Compatible Supplement Plan
+
+The r8 delta is intentionally limited to three integration changes; the accepted r7 provider slice is not rewritten.
+
+1. Move Codex executable editing into a native Configurable with transactional Apply/Reset/Cancel, while keeping confirmed login/logout immediate and isolated-account-only.
+2. Remove the bookmark ToolWindow Codex settings affordance and route both provider and Chat entry points through `ShowSettingsUtil`.
+3. Let Environment Actions prepare a Commit message through IDE-native VCS APIs only; preserve user ownership of file selection, checks, staging and final commit.
+
+Implementation, Environment schema/session work and current-tree gates are delegated to the [Environment Actions / Codex Chat plan](../../260731/1720-environment-actions-codex-chat/plan.md). r7 verification remains historical evidence; r8 must independently rerun strict provider regressions and plugin-level gates.

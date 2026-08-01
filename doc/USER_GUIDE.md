@@ -1,7 +1,7 @@
 # EzCodeMarks 用户指南
 
 > **版本**：1.2.0
-> **更新日期**：2026-07-17
+> **更新日期**：2026-07-31
 > **适用版本**：EzCodeMarks 1.2.0+
 
 ---
@@ -10,6 +10,7 @@
 
 - [快速开始](#快速开始)
 - [Git 提交信息助手](#git-提交信息助手)
+- [Environment Actions](#environment-actions)
 - [基本操作](#基本操作)
 - [书签树管理](#书签树管理)
 - [编辑器集成](#编辑器集成)
@@ -103,7 +104,7 @@
 
 - `Git Commit Message`：配置工具栏显隐、查看当前 Keymap/快捷键冲突、打开 Keymap 设置、控制字段显示与 type 展示方式、skip-ci、是否在 AI 写回前显示预览，以及全局附加指令和同步冲突处理。
 - `Commit Template`：按原助手布局提供 Template / Type / Style 页签。Template 管理默认值和安全 Velocity 编辑/预览；Type 管理 conventional commit 类型与顺序；Style 管理标准、精简和自定义风格及 AI 优化。
-- `LLM Settings`：按原助手布局提供顶部 Active Model、Temperature、Response Language、Smart Echo、Streaming、Reasoning 与 Test，下方表格用于 Profile 的新增、删除、编辑和复制。表格选中只决定管理对象，不会偷偷切换 Active Model；可点击铅笔按钮编辑，也可左键双击具体 Profile 行进入同一编辑对话框。
+- `LLM Settings`：按原助手布局提供顶部 Active Model、Temperature、Response Language、Smart Echo、Streaming、Reasoning 与 Test，下方表格用于 Profile 的新增、删除、编辑和复制。表格选中只决定管理对象，不会偷偷切换 Active Model；可点击铅笔按钮编辑，也可左键双击具体 Profile 行进入同一编辑对话框。ChatGPT / Codex 区域只显示当前可执行文件并打开独立 `Codex CLI` 设置页。
 - Profile 编辑对话框中的 API Key 使用宽幅掩码输入；新输入密钥在当前设置会话中保留，Apply 后也不会清空。空输入框不代表删除，只有确认 `Clear API key…` 后再 Apply 才会删除凭据。Model 下拉输入会实时进行大小写无关的 exact / prefix / substring / subsequence 模糊筛选；可滚动后鼠标或键盘选择并点击 `OK` 保存，也允许输入并保留自定义模型 ID。模型请求返回前输入的搜索词会继续应用到新列表。
 - `Fetch models` 与 `Test` 都会立即显示阶段状态并可再次点击取消；关闭 Profile 对话框也会取消其模型请求并清零临时密钥副本。`Test` 先获取模型列表；选择模型后再发起最多 8 token 的最小推理，未选择模型则停在列表阶段。该操作可能产生 Provider 请求或费用。
 - `Project Private`：选择仅当前 workspace 生效的模板/风格并清除未完成草稿。
@@ -115,12 +116,12 @@
 ### ChatGPT / Codex Provider
 
 1. 安装 `codex-cli 0.144.5` 或更新版本。
-2. 在 `LLM Settings` 的 ChatGPT / Codex 区域填写 Codex 可执行文件路径；留空时使用 `PATH` 中的 `codex`，修改后先 Apply。
-3. 点击刷新检查安装与账户状态，再选择浏览器登录或设备码登录。登录、令牌保存/刷新和退出均由 Codex App Server 完成，EzCodeMarks 不读取 OAuth 令牌。
+2. 在 `Settings → Tools → EzCodeMarks → Git Commit Message → Codex CLI` 填写 Codex 可执行文件路径；留空时通过平台 PATH 和标准安装位置探测。可执行文件字段遵循 Apply/Reset/Cancel，未 Apply 时检查和登录操作保持禁用。
+3. 点击刷新检查安装与账户状态，再选择浏览器登录或设备码登录。这里操作的是隔离的 Commit Provider 账号；登录和退出立即生效，执行前会确认，不能由 Cancel 回滚。令牌仍由 Codex App Server 管理，EzCodeMarks 不读取 OAuth 令牌。
 4. 新建 `ChatGPT / Codex` Profile，使用 `Fetch models` 选择文本模型。该 Provider 不显示 Endpoint，也不需要 API Key。
 5. `Test` 仍会先读取模型，并在已选择模型时执行最多 8 token 的最小推理；它可能使用 ChatGPT 配额。
 
-EzCodeMarks 在 JetBrains 公共数据目录使用独立 Codex home，因此同一机器上的 EzCodeMarks JetBrains 产品共享一个 ChatGPT 账户，但不会复用普通 Codex CLI 或 VS Code 的账户。退出会影响所有这些 EzCodeMarks 实例，并使既有源码上下文同意失效。
+EzCodeMarks 在 JetBrains 公共数据目录为 Commit Provider 使用独立 Codex home，因此同一机器上的 EzCodeMarks JetBrains 产品共享一个隔离 ChatGPT 账户，但不会复用普通 Codex CLI 或 VS Code 的账户。退出会影响所有这些 EzCodeMarks 实例，并使既有源码上下文同意失效。Environment Actions 中的 **Codex Chat** 是另一条路径：它使用用户正常 CLI home、账号、配置、Skills、插件和项目指令，不会放宽 Commit Provider 的只读隔离。
 
 每次生成使用新的临时结构化线程：不加载项目指令文件，不持久化对话历史，不读取项目或用户 home，只允许读取空的隔离工作目录，并禁用模型网络、Shell、浏览器、MCP、Hook 和委派工具。隔离结果不匹配、出现未知工具事件、取消时尚未取得线程/Turn ID，都会终止该 App Server 进程并拒绝结果。
 
@@ -134,7 +135,7 @@ EzCodeMarks 在 JetBrains 公共数据目录使用独立 Codex home，因此同�
 
 - OpenAI Compatible 使用 `/chat/completions` 与 `/models`，通过 Bearer 认证。
 - Anthropic 使用 `/v1/messages` 与 `/v1/models`，通过 `x-api-key` 认证。
-- ChatGPT / Codex 使用用户安装的 Codex CLI 稳定 App Server 协议；账户和令牌由独立 Codex home 管理，不进入插件状态。
+- ChatGPT / Codex Commit Provider 使用用户安装的 Codex CLI 稳定 App Server 协议；其账户和令牌由独立 Codex home 管理，不进入插件状态。Codex Chat 使用普通 CLI 身份，插件不持久化其凭据或对话。
 - API 密钥只保存在 IntelliJ PasswordSafe，不会写入插件 XML、项目 workspace 或 `.codemark`。
 - 每个 Profile 第一次向当前 Provider 类型与 Endpoint 发送源码上下文时，必须确认数据共享；Endpoint、Provider 或隐私策略变化后会再次确认。
 - 上下文会过滤二进制、生成文件、`.env*`、凭据、token、私钥、证书、SSH、service-account、Docker/Kubernetes 认证文件等敏感路径或内容。
@@ -143,6 +144,31 @@ EzCodeMarks 在 JetBrains 公共数据目录使用独立 Codex home，因此同�
 - Velocity 仅允许结构化字段、局部变量和 `trim/lower/truncate` 字符串 helper；文件加载、`#parse/#include/#evaluate/#foreach`、任意成员访问、范围与超长模板/输出会被拒绝。
 
 项目私有模板/风格选择、Profile、未完成草稿和源码同意保存在 IDE workspace state，不会进入 CodeMark 数据文件；项目共享模板、风格、附加指令和默认值保存在 `.idea/ezCodeMarkCommitMessage.xml`。
+
+---
+
+## Environment Actions
+
+Environment Actions 的定义在同机 JetBrains IDE 间共享，当前 Environment 则按项目保存在非漫游 workspace state。打开 `Settings → Tools → EzCodeMarks → Environment Actions` 创建或编辑 Environment；同一机器中的 IntelliJ IDEA、Rider、WebStorm 等产品读取相同定义，但各项目可保持自己的当前选择。
+
+每个 Environment 默认包含 10 个固定 Action 槽位。可编辑 Action 名称、类型、定义、参数、工作目录与环境变量，并拖拽调整显示顺序。拖拽不会影响槽位：`Environment Action Slot 1` 始终调用槽位 1，依此类推。可通过设置页的“Configure shortcuts…”为每个槽位打开 IDE Keymap 配置；插件不会覆盖已有快捷键。
+
+| Action 类型 | 配置内容 | 执行方式 |
+| --- | --- | --- |
+| Shell | 命令 | macOS/Linux 使用 `/bin/sh -lc`，Windows 使用 `cmd.exe /c`。 |
+| Script | 脚本路径与参数 | 支持 Python、Node.js、Shell、PowerShell、Ruby、PHP 等常见扩展名，并自动选择解释器。 |
+| Codex one-shot job | 提示词 | 通过 stdin 调用 `codex exec --json --ephemeral`；默认要求 Git 目录，只有显式开启“允许非 Git 目录”才跳过检查。需要交互审批时引导到 Codex Chat。 |
+| Prepare Commit | 提交说明 | 打开 IDE 原生 Commit 流程并安全填入说明；插件不选择文件、不暂存、不提交。 |
+
+创建或编辑 Action 后可选择一行并点击 `Detect type`：常见脚本扩展名、`skill:`/`agent:`/`codex ` 前缀和历史 `git commit`/`commit:` 前缀会由本地规则分别识别为 Script、Codex one-shot 或 Prepare Commit；其他内容默认是 Shell。
+
+可在 EzCodeMarks 工具窗口的 `Environment Actions` 标签选中 Environment、查看 Action、运行或停止进程。Shell、Script 与 one-shot 由平台进程 API 管理，输出流相互隔离；超时、Stop 或 ToolWindow 释放都会终止进程树。Prepare Commit 只打开原生 Commit UI：空提交框直接填入，非空时选择 Replace / Append / Cancel；若平台未消费短时草稿，说明会复制到剪贴板，绝不会自动执行 `git add` 或 `git commit`。
+
+同一标签中的 **Codex Chat** 是真实临时会话：首次发送建立一个 `ephemeral` App Server thread，后续消息在该 thread 上启动新的 turn，并流式显示消息、工具与审批事件。会话继承用户正常 CLI 的 sandbox、approval、network、Skills、插件和项目指令；无法确认有效权限时会阻止首轮，宽权限配置每个新会话都需确认。审批以内联、脱敏、非阻塞控件展示，必须由用户 Allow/Deny，等待期间 Stop 仍可操作；切换 Environment 后需 New conversation，聊天记录不会持久化。
+
+Environment 变量不是秘密存储。设置页会拒绝疑似密钥变量名，日志和通知也会脱敏，但仍请勿在变量、命令或参数中保存密码、令牌或私钥。
+
+完整的数据接口、执行限制与安全边界见 [Environment Actions 接口说明](environment-actions.md)。
 
 ---
 

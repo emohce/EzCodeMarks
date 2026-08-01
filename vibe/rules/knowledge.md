@@ -5,6 +5,7 @@ Tool: codex
 ## Routing
 
 - Error memories: `vibe/knowledge/error-memory/`
+- Verified Computer Use routes: `vibe/knowledge/computer-use/`
 - ADRs: `vibe/knowledge/adr/`
 - Glossary/domain notes: `vibe/knowledge/glossary.md` or domain-specific files
 - Active process docs: `vibe/specs/`
@@ -29,4 +30,3 @@ Tool: codex
 - Legacy map: [../knowledge/legacy/README.md](../knowledge/legacy/README.md)
 - DB workspace: not configured for this project
 - Use `--all-markdown` only for deep historical document hygiene; default audit covers active AI rule surfaces.
-

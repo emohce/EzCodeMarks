@@ -10,6 +10,7 @@ Tool: codex
 ## Authoritative Locations
 
 - Error memory: [error-memory/README.md](error-memory/README.md)
+- Computer Use routes: [computer-use/README.md](computer-use/README.md)
 - ADR: [adr/README.md](adr/README.md)
 - Technical details: [technical-details.md](technical-details.md)
 - Active specs: [../specs/README.md](../specs/README.md)
