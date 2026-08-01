@@ -55,24 +55,31 @@ data class CommitProjectSharedSettingsState(
 )
 class CommitProjectSharedSettingsService : PersistentStateComponent<CommitProjectSharedSettingsState> {
     private var currentState = CommitProjectSharedSettingsState()
+    private var rawState: CommitProjectSharedSettingsState? = null
     private var unsupportedSchema = false
 
-    override fun getState(): CommitProjectSharedSettingsState = currentState
+    override fun getState(): CommitProjectSharedSettingsState = rawState ?: currentState
 
     override fun loadState(state: CommitProjectSharedSettingsState) {
         if (state.schemaVersion !in 0..CommitProjectSharedSettingsState.CURRENT_SCHEMA_VERSION) {
-            currentState = state.deepCopy()
+            rawState = state.deepCopy()
             unsupportedSchema = true
             return
         }
         unsupportedSchema = false
+        rawState = null
         currentState = state.deepCopy().apply { normalize() }
     }
 
     fun replaceState(state: CommitProjectSharedSettingsState) {
         ensureSupported()
         currentState = state.deepCopy().apply { normalize() }
+        rawState = null
     }
+
+    fun snapshot(): CommitProjectSharedSettingsState = currentState.deepCopy()
+
+    fun isSchemaSupported(): Boolean = !unsupportedSchema
 
     fun template(id: String): CommitTemplateDefinition? {
         ensureSupported()

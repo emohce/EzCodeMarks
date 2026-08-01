@@ -1,10 +1,12 @@
 package emohce.presentation.commitmessage
 
 import com.intellij.openapi.components.State
+import com.intellij.openapi.project.Project
 import emohce.data.commitmessage.CommitMessageSettingsState
 import emohce.data.commitmessage.CommitProjectSharedSettingsService
 import emohce.data.commitmessage.CommitProjectSharedSettingsState
 import emohce.data.commitmessage.CommitProjectState
+import emohce.presentation.commitmessage.settings.CommitProjectProvidersConfigurable
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -98,6 +100,17 @@ class CommitMessageDescriptorTest {
             assertEquals("emohce.settings.commitMessage", page.getAttribute("parentId"))
             assertEquals("true", page.getAttribute("nonDefaultProject"))
         }
+    }
+
+    @Test
+    fun `project providers configurable exposes the platform project constructor`() {
+        assertEquals(
+            listOf(Project::class.java),
+            CommitProjectProvidersConfigurable::class.java
+                .getConstructor(Project::class.java)
+                .parameterTypes
+                .toList(),
+        )
     }
 
     @Test

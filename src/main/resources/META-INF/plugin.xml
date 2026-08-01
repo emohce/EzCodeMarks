@@ -49,6 +49,12 @@
             id="emohce.settings.commitMessage"
             bundle="messages.CommitMessageBundle"
             key="settings.commitMessage.title"/>
+        <applicationConfigurable
+            parentId="emohce.settings"
+            instance="emohce.presentation.environmentaction.EnvironmentActionsConfigurable"
+            id="emohce.settings.environmentActions"
+            bundle="messages.EnvironmentActionsBundle"
+            key="settings.title"/>
         <projectConfigurable
             parentId="emohce.settings.commitMessage"
             instance="emohce.presentation.commitmessage.settings.CommitTemplatesConfigurable"
@@ -62,6 +68,12 @@
             id="emohce.settings.commitMessage.providers"
             bundle="messages.CommitMessageBundle"
             key="settings.providers.title"/>
+        <applicationConfigurable
+            parentId="emohce.settings.commitMessage"
+            instance="emohce.presentation.commitmessage.settings.CodexSettingsConfigurable"
+            id="emohce.settings.commitMessage.codex"
+            bundle="messages.CommitMessageBundle"
+            key="settings.providers.codex.settingsTitle"/>
         <projectConfigurable
             parentId="emohce.settings.commitMessage"
             instance="emohce.presentation.commitmessage.settings.CommitProjectDefaultsConfigurable"
@@ -83,6 +95,9 @@
             nonDefaultProject="true"
             bundle="messages.CommitMessageBundle"
             key="settings.project.shared.title"/>
+        <vcs.commitMessageProvider
+            implementation="emohce.presentation.environmentaction.EnvironmentCommitMessageProvider"
+            order="first"/>
     </extensions>
 
     <actions>
@@ -177,6 +192,20 @@
             <add-to-group group-id="Git.Stage.Tree.Menu" anchor="last"/>
         </action>
     </actions>
+    <actions resource-bundle="messages.EnvironmentActionsBundle">
+        <group id="EzCodeMarks.EnvironmentActions" popup="true">
+            <action id="EzCodeMarks.EnvironmentAction.Slot1" class="emohce.presentation.environmentaction.EnvironmentActionSlot1"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot2" class="emohce.presentation.environmentaction.EnvironmentActionSlot2"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot3" class="emohce.presentation.environmentaction.EnvironmentActionSlot3"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot4" class="emohce.presentation.environmentaction.EnvironmentActionSlot4"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot5" class="emohce.presentation.environmentaction.EnvironmentActionSlot5"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot6" class="emohce.presentation.environmentaction.EnvironmentActionSlot6"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot7" class="emohce.presentation.environmentaction.EnvironmentActionSlot7"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot8" class="emohce.presentation.environmentaction.EnvironmentActionSlot8"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot9" class="emohce.presentation.environmentaction.EnvironmentActionSlot9"/>
+            <action id="EzCodeMarks.EnvironmentAction.Slot10" class="emohce.presentation.environmentaction.EnvironmentActionSlot10"/>
+        </group>
+    </actions>
     <actions resource-bundle="messages.CommitMessageBundle">
         <group id="EzCodeMarks.CommitMessage.Actions" popup="false">
             <action id="EzCodeMarks.CommitMessage.Create"
@@ -214,6 +243,7 @@
             <group id="EzCodeMarks.CommitMessage.Tools" popup="true">
                 <reference ref="EzCodeMarks.CommitMessage.SelectStyle"/>
             </group>
+            <reference ref="EzCodeMarks.EnvironmentActions"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </group>
     </actions>

@@ -22,6 +22,7 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.vcs.CommitMessageI
 import com.intellij.openapi.vcs.VcsDataKeys
 import com.intellij.openapi.vcs.changes.Change
+import com.intellij.openapi.vcs.changes.LocalChangeList
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.LoggedErrorProcessor
@@ -33,6 +34,7 @@ import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextArea
+import com.intellij.ui.components.JBTextField
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.table.JBTable
@@ -95,6 +97,7 @@ import emohce.presentation.commitmessage.dialog.CommitRefinementInteraction
 import emohce.presentation.commitmessage.dialog.CommitRefinementProgressRunner
 import emohce.presentation.commitmessage.dialog.CommitRefinementPromptDialog
 import emohce.presentation.commitmessage.dialog.DefaultCommitMessagePreviewRefiner
+import emohce.presentation.commitmessage.settings.CodexSettingsPanel
 import emohce.presentation.commitmessage.settings.CommitMessageSettingsConfigurable
 import emohce.presentation.commitmessage.settings.CommitMessageKeymapSupport
 import emohce.presentation.commitmessage.settings.CommitProjectDefaultsConfigurable
@@ -110,6 +113,10 @@ import emohce.presentation.commitmessage.settings.ProviderProfileEditResult
 import emohce.presentation.commitmessage.settings.ProviderProfileEditor
 import emohce.presentation.commitmessage.settings.ProviderModelFetcher
 import emohce.presentation.commitmessage.settings.ProviderModelRequest
+import emohce.presentation.environmentaction.EnvironmentCommitMessageProvider
+import emohce.presentation.environmentaction.NativeCommitWorkflowLauncher
+import emohce.presentation.environmentaction.PendingCommitMessageService
+import emohce.data.environmentaction.InteractiveCodexSessionFactory
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -987,6 +994,23 @@ class CommitMessagePlatformIntegrationTest {
     }
 
     @Test
+    fun `shared project settings page loads an error message for unsupported schema instead of crashing`() {
+        runInEdtAndWait {
+            val shared = CommitProjectSharedSettingsService.getInstance(fixture.project)
+            shared.loadState(CommitProjectSharedSettingsState(schemaVersion = 999))
+            assertFalse(shared.isSchemaSupported())
+
+            val page = CommitProjectSharedConfigurable(fixture.project)
+            val root = page.createComponent()
+
+            assertNotNull(root)
+            assertTrue(descendants(root).filterIsInstance<JBTabbedPane>().none())
+            assertFalse(page.isModified)
+            page.disposeUIResources()
+        }
+    }
+
+    @Test
     fun `project provider page stores private profile metadata and scoped credential without codex account controls`() {
         runInEdtAndWait {
             val projectState = CommitProjectStateService.getInstance(fixture.project)
@@ -1231,7 +1255,95 @@ class CommitMessagePlatformIntegrationTest {
     }
 
     @Test
-    fun `codex account controls use the isolated gateway without external browser or account writes`() {
+    fun `native commit message provider consumes a prepared draft once and expires stale drafts`() {
+        val service = PendingCommitMessageService.getInstance(fixture.project)
+        val provider = EnvironmentCommitMessageProvider()
+        val changeList = mockk<LocalChangeList>(relaxed = true)
+
+        service.offer("feat: native workflow")
+
+        assertEquals("feat: native workflow", provider.getCommitMessage(changeList, fixture.project))
+        assertNull(provider.getCommitMessage(changeList, fixture.project))
+
+        service.offer("stale", lifetimeMillis = -1)
+        assertNull(provider.getCommitMessage(changeList, fixture.project))
+    }
+
+    @Test
+    fun `project scoped Environment Action services accept platform coroutine scope injection`() {
+        assertNotNull(NativeCommitWorkflowLauncher.getInstance(fixture.project))
+        assertNotNull(InteractiveCodexSessionFactory.getInstance(fixture.project))
+    }
+
+    @Test
+    fun `codex executable remains transactional and disables login until applied`() {
+        runInEdtAndWait {
+            var executable = "codex"
+            var confirmations = 0
+            val gateway = mockk<CodexAccountSettingsGateway>(relaxed = true)
+            every { gateway.executablePath() } answers { executable }
+            every { gateway.resolvedExecutablePath() } answers { executable }
+            every { gateway.setExecutablePath(any(), any()) } answers {
+                assertEquals(executable, secondArg<String>())
+                executable = firstArg<String>()
+            }
+            val panel = CodexSettingsPanel(
+                gateway = gateway,
+                requestRunner = ProviderSettingsRequestRunner { _, operation ->
+                    operation(EmptyProgressIndicator())
+                },
+                confirmCodexLogin = {
+                    confirmations += 1
+                    true
+                },
+            )
+            panel.reset()
+            val field = descendants(panel.component).filterIsInstance<JBTextField>().single()
+            val signIn = descendants(panel.component).filterIsInstance<JButton>()
+                .single { it.text == CommitMessageBundle.message("settings.providers.codex.signIn") }
+
+            field.text = "/opt/custom-codex"
+            assertTrue(panel.isModified())
+            assertFalse(signIn.isEnabled)
+            signIn.doClick()
+            assertEquals(0, confirmations)
+            assertEquals("codex", executable)
+
+            panel.reset()
+            assertEquals("codex", field.text)
+            assertFalse(panel.isModified())
+
+            field.text = "/opt/custom-codex"
+            panel.applySettings()
+            assertEquals("/opt/custom-codex", executable)
+            assertFalse(panel.isModified())
+            assertTrue(signIn.isEnabled)
+            panel.dispose()
+        }
+    }
+
+    @Test
+    fun `codex executable apply rejects a concurrent external change`() {
+        runInEdtAndWait {
+            var executable = "codex"
+            val gateway = mockk<CodexAccountSettingsGateway>(relaxed = true)
+            every { gateway.executablePath() } answers { executable }
+            every { gateway.resolvedExecutablePath() } answers { executable }
+            val panel = CodexSettingsPanel(gateway = gateway)
+            panel.reset()
+            descendants(panel.component).filterIsInstance<JBTextField>().single().text = "/opt/local-codex"
+            executable = "/opt/remote-codex"
+
+            assertThrows(ConfigurationException::class.java) { panel.applySettings() }
+
+            assertTrue(panel.isModified())
+            verify(exactly = 0) { gateway.setExecutablePath(any(), any()) }
+            panel.dispose()
+        }
+    }
+
+    @Test
+    fun `codex settings panel account controls use the isolated gateway without external browser or account writes`() {
         runInEdtAndWait {
             var executable = "codex"
             var signedIn = true
@@ -1240,6 +1352,7 @@ class CommitMessagePlatformIntegrationTest {
             val deviceCodes = mutableListOf<String>()
             val gateway = object : CodexAccountSettingsGateway {
                 override fun executablePath(): String = executable
+                override fun resolvedExecutablePath(): String = executable
                 override fun setExecutablePath(value: String, expectedValue: String) {
                     check(executable == expectedValue)
                     executable = value.trim()
@@ -1283,26 +1396,28 @@ class CommitMessagePlatformIntegrationTest {
                     signedIn = false
                 }
             }
-            val page = CommitProvidersConfigurable(
+            val panel = CodexSettingsPanel(
+                gateway = gateway,
                 requestRunner = ProviderSettingsRequestRunner { _, operation ->
                     operation(EmptyProgressIndicator())
                 },
-                codexGateway = gateway,
-                openCodexUrl = openedUrls::add,
-                showCodexDeviceCode = deviceCodes::add,
+                openCodexUrl = { openedUrls.add(it) },
+                showCodexDeviceCode = { deviceCodes.add(it) },
+                confirmCodexLogin = { true },
                 confirmCodexLogout = { true },
             )
-            val root = page.createComponent()
-            val buttons = descendants(root).filterIsInstance<JButton>()
+            panel.reset()
+            val component = panel.component
+            val buttons = descendants(component).filterIsInstance<JButton>()
 
             buttons.single { it.text == CommitMessageBundle.message("settings.providers.codex.refresh") }.doClick()
-            assertTrue(descendants(root).filterIsInstance<JBLabel>().any {
+            assertTrue(descendants(component).filterIsInstance<JBLabel>().any {
                 it.text.contains("developer@example.test") && it.text.contains("plus")
             })
 
             buttons.single { it.text == CommitMessageBundle.message("settings.providers.codex.logout") }.doClick()
             assertEquals(1, logoutCount)
-            assertTrue(descendants(root).filterIsInstance<JBLabel>().any {
+            assertTrue(descendants(component).filterIsInstance<JBLabel>().any {
                 it.text == CommitMessageBundle.message("settings.providers.codex.signedOut")
             })
 
@@ -1310,28 +1425,28 @@ class CommitMessagePlatformIntegrationTest {
             assertEquals(listOf("https://example.test/login"), openedUrls)
             assertTrue(signedIn)
             assertTrue(deviceCodes.isEmpty())
-            assertFalse(page.isModified)
-            page.disposeUIResources()
+            assertFalse(panel.isModified())
+            panel.dispose()
         }
     }
 
     @Test
-    fun `disposing provider settings cancels queued codex account work before gateway access`() {
+    fun `disposing codex settings panel cancels queued account work before gateway access`() {
         runInEdtAndWait {
             val gateway = mockk<CodexAccountSettingsGateway>(relaxed = true)
             every { gateway.executablePath() } returns "codex"
             val queued = mutableListOf<(ProgressIndicator) -> Unit>()
-            val page = CommitProvidersConfigurable(
+            val panel = CodexSettingsPanel(
+                gateway = gateway,
                 requestRunner = ProviderSettingsRequestRunner { _, operation -> queued += operation },
-                codexGateway = gateway,
             )
-            val root = page.createComponent()
-            descendants(root).filterIsInstance<JButton>()
+            panel.reset()
+            descendants(panel.component).filterIsInstance<JButton>()
                 .single { it.text == CommitMessageBundle.message("settings.providers.codex.refresh") }
                 .doClick()
             assertEquals(1, queued.size)
 
-            page.disposeUIResources()
+            panel.dispose()
             val indicator = EmptyProgressIndicator()
             queued.single()(indicator)
 
@@ -1342,25 +1457,25 @@ class CommitMessagePlatformIntegrationTest {
     }
 
     @Test
-    fun `stale queued codex work cannot clear a replacement handle and apply restores controls`() {
+    fun `stale queued codex panel work cannot clear a replacement handle and apply restores controls`() {
         runInEdtAndWait {
             val gateway = mockk<CodexAccountSettingsGateway>(relaxed = true)
             every { gateway.executablePath() } returns "codex"
             every { gateway.installationStatus() } returns CodexInstallationStatus(true, "codex", "0.144.5")
             every { gateway.account(any()) } returns CodexAppServerAccount(null, null, null, true)
             val queued = mutableListOf<(ProgressIndicator) -> Unit>()
-            val page = CommitProvidersConfigurable(
+            val panel = CodexSettingsPanel(
+                gateway = gateway,
                 requestRunner = ProviderSettingsRequestRunner { _, operation -> queued += operation },
-                codexGateway = gateway,
             )
-            val root = page.createComponent()
-            val refresh = descendants(root).filterIsInstance<JButton>()
+            panel.reset()
+            val refresh = descendants(panel.component).filterIsInstance<JButton>()
                 .single { it.text == CommitMessageBundle.message("settings.providers.codex.refresh") }
-            val signIn = descendants(root).filterIsInstance<JButton>()
+            val signIn = descendants(panel.component).filterIsInstance<JButton>()
                 .single { it.text == CommitMessageBundle.message("settings.providers.codex.signIn") }
 
             refresh.doClick()
-            page.reset()
+            panel.reset()
             refresh.doClick()
             assertEquals(2, queued.size)
             queued[1](EmptyProgressIndicator())
@@ -1374,10 +1489,9 @@ class CommitMessagePlatformIntegrationTest {
             refresh.doClick()
             assertEquals(3, queued.size)
             assertFalse(refresh.isEnabled)
-            page.apply()
+            panel.applySettings()
             assertTrue(refresh.isEnabled)
-            assertTrue(signIn.isEnabled)
-            page.disposeUIResources()
+            panel.dispose()
         }
     }
 
@@ -2322,47 +2436,6 @@ class CommitMessagePlatformIntegrationTest {
             assertTrue(page.isModified)
             page.editProfileForTest("profile-failure")
             assertEquals("new-secret", reopenedSessionKey)
-            page.disposeUIResources()
-        }
-    }
-
-    @Test
-    fun `provider credential failure rolls back the codex executable and portable state`() {
-        runInEdtAndWait {
-            val service = CommitMessageSettingsService.getInstance()
-            service.replaceState(service.state.deepCopy().apply {
-                profiles = mutableListOf(LlmProfile(id = "profile-atomic", name = "Atomic", model = "model"))
-                activeProfileId = "profile-atomic"
-            })
-            val before = service.snapshot(refreshPortable = false)
-            var executable = "codex-old"
-            val gateway = mockk<CodexAccountSettingsGateway>(relaxed = true)
-            every { gateway.executablePath() } answers { executable }
-            every { gateway.setExecutablePath(any(), any()) } answers {
-                val value = firstArg<String>()
-                val expected = secondArg<String>()
-                check(executable == expected)
-                executable = value
-            }
-            val passwordSafe = mockk<PasswordSafe>(relaxed = true)
-            every { passwordSafe.set(any(), any<Credentials>()) } throws IllegalStateException("store unavailable")
-            val page = CommitProvidersConfigurable(
-                secretStore = CommitMessageSecretStore(passwordSafe),
-                profileEditor = ProviderProfileEditor { input, _ ->
-                    input.sessionKey?.fill('\u0000')
-                    ProviderProfileEditResult(input.profile.copy(name = "Changed"), "new-secret".toCharArray())
-                },
-                codexGateway = gateway,
-            )
-            val root = page.createComponent()
-            descendants(root).filterIsInstance<JTextField>().single { it.text == "codex-old" }.text = "codex-new"
-            page.editProfileForTest("profile-atomic")
-
-            assertThrows(ConfigurationException::class.java) { page.apply() }
-
-            assertEquals("codex-old", executable)
-            assertEquals(before, service.snapshot(refreshPortable = false))
-            assertTrue(page.isModified)
             page.disposeUIResources()
         }
     }

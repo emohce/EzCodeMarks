@@ -7,6 +7,8 @@ import com.intellij.ui.content.ContentFactory
 import emohce.core.di.ServiceLocator
 import emohce.presentation.editor.BookmarkDocumentListener
 import emohce.presentation.editor.bookmark.BookmarkNavigationListener
+import emohce.environmentaction.EnvironmentActionsBundle
+import emohce.presentation.environmentaction.EnvironmentActionsPanel
 import emohce.presentation.toolwindow.panel.BookmarkPanel
 
 class CodeMarksToolWindowFactory : ToolWindowFactory {
@@ -31,7 +33,18 @@ class CodeMarksToolWindowFactory : ToolWindowFactory {
         val bookmarkNavigationListener = BookmarkNavigationListener(project)
 
         val panel = BookmarkPanel(project, viewModel)
-        val content = ContentFactory.getInstance().createContent(panel, "", false)
+        val content = ContentFactory.getInstance().createContent(
+            panel,
+            EnvironmentActionsBundle.message("panel.bookmarksTab"),
+            false,
+        )
+        val environmentPanel = EnvironmentActionsPanel(project)
+        val environmentContent = ContentFactory.getInstance().createContent(
+            environmentPanel,
+            EnvironmentActionsBundle.message("panel.tab"),
+            false,
+        ).apply { setDisposer(environmentPanel) }
         toolWindow.contentManager.addContent(content)
+        toolWindow.contentManager.addContent(environmentContent)
     }
 }

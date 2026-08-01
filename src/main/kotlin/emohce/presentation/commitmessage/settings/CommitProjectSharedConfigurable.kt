@@ -88,6 +88,13 @@ internal class CommitProjectSharedConfigurable(private val project: Project) : S
 
     override fun createComponent(): JComponent {
         root?.let { return it }
+        if (!service.isSchemaSupported()) {
+            return panel {
+                row {
+                    label(CommitMessageBundle.message("settings.project.shared.unsupportedSchema"))
+                }
+            }.also { root = it }
+        }
         reset()
         val templatePanel = ToolbarDecorator.createDecorator(templateTable)
             .setAddAction { addTemplate() }
@@ -132,7 +139,7 @@ internal class CommitProjectSharedConfigurable(private val project: Project) : S
     override fun apply() {
         working = controlSnapshot()
         validateWorkingState()
-        val current = service.state.deepCopy().apply { normalize() }
+        val current = service.snapshot()
         if (current != loaded && current != working) {
             throw ConfigurationException(CommitMessageBundle.message("settings.project.shared.concurrentChange"))
         }
@@ -141,7 +148,7 @@ internal class CommitProjectSharedConfigurable(private val project: Project) : S
     }
 
     override fun reset() {
-        loaded = service.state.deepCopy().apply { normalize() }
+        loaded = service.snapshot()
         working = loaded.deepCopy()
         loading = true
         try {

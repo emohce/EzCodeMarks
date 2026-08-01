@@ -53,7 +53,7 @@ private val DEFAULT_PROJECT_PROVIDER_REQUEST_RUNNER = ProviderSettingsRequestRun
     })
 }
 
-internal class CommitProjectProvidersConfigurable(
+internal class CommitProjectProvidersConfigurable @JvmOverloads constructor(
     private val project: Project,
     private val secretStore: CommitMessageSecretStore = CommitMessageSecretStore(),
     private val providerClient: LlmProviderClient = DefaultLlmProviderClient(),

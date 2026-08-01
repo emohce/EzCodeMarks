@@ -7,6 +7,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.options.SearchableConfigurable
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -28,12 +29,7 @@ import emohce.data.commitmessage.CommitMessageCredentialAccess
 import emohce.data.commitmessage.CommitMessageSecretStore
 import emohce.data.commitmessage.CommitMessageSettingsConflictException
 import emohce.data.commitmessage.CommitMessageSettingsService
-import emohce.data.commitmessage.CodexAppServerErrorKind
-import emohce.data.commitmessage.CodexAppServerException
 import emohce.data.commitmessage.CodexAppServerService
-import emohce.data.commitmessage.CodexAccountSettingsGateway
-import emohce.data.commitmessage.CodexInstallationStatus
-import emohce.data.commitmessage.CodexInstallationProblem
 import emohce.data.commitmessage.DefaultLlmProviderClient
 import emohce.data.commitmessage.HttpLlmProviderClient
 import emohce.data.commitmessage.LlmProviderClient
@@ -69,7 +65,7 @@ internal fun interface ProviderSettingsRequestRunner {
     fun run(title: String, operation: (ProgressIndicator) -> Unit)
 }
 
-private val DEFAULT_PROVIDER_SETTINGS_REQUEST_RUNNER = ProviderSettingsRequestRunner { title, operation ->
+internal val DEFAULT_PROVIDER_SETTINGS_REQUEST_RUNNER = ProviderSettingsRequestRunner { title, operation ->
     ProgressManager.getInstance().run(object : Task.Backgroundable(null, title, true) {
         override fun run(indicator: ProgressIndicator) = operation(indicator)
     })
@@ -93,21 +89,6 @@ internal class CommitProvidersConfigurable(
         )
     },
     private val profileEditor: ProviderProfileEditor = DEFAULT_PROVIDER_PROFILE_EDITOR,
-    private val codexGateway: CodexAccountSettingsGateway = CodexAppServerService.getInstance(),
-    private val openCodexUrl: (String) -> Unit = BrowserUtil::browse,
-    private val showCodexDeviceCode: (String) -> Unit = { code ->
-        Messages.showInfoMessage(
-            CommitMessageBundle.message("settings.providers.codex.deviceCode", code),
-            CommitMessageBundle.message("settings.providers.codex.group"),
-        )
-    },
-    private val confirmCodexLogout: () -> Boolean = {
-        Messages.showYesNoDialog(
-            CommitMessageBundle.message("settings.providers.codex.logoutConfirm"),
-            CommitMessageBundle.message("settings.providers.codex.group"),
-            Messages.getQuestionIcon(),
-        ) == Messages.YES
-    },
 ) : SearchableConfigurable {
     private var profiles = mutableListOf<LlmProfile>()
     private var activeProfileId = ""
@@ -120,8 +101,8 @@ internal class CommitProvidersConfigurable(
     private val fetchedModels = linkedMapOf<String, List<String>>()
     private var testRunning = false
     private var loadedProviderFields = ProviderFields()
-    private var loadedCodexExecutable = ""
     private val currentConnectionTest = AtomicReference<ConnectionTestHandle?>()
+    private val codexStatusLabel = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
 
     private val tableModel = ProfileTableModel()
     private val profileTable = JBTable(tableModel).apply {
@@ -160,17 +141,6 @@ internal class CommitProvidersConfigurable(
     private val connectionCostHint = JBLabel(CommitMessageBundle.message("settings.providers.testCostHint")).apply {
         foreground = UIUtil.getContextHelpForeground()
     }
-    private val codexExecutableField = JBTextField().apply { columns = 42 }
-    private val codexAccountStatus = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
-    private val codexRefreshButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.codex.refresh"))
-    private val codexSignInButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.codex.signIn"))
-    private val codexDeviceButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.codex.deviceSignIn"))
-    private val codexLogoutButton = javax.swing.JButton(CommitMessageBundle.message("settings.providers.codex.logout"))
-    private val codexRequestGeneration = AtomicLong()
-    private val currentCodexRequest = AtomicReference<CodexRequestHandle?>()
-    private val codexRequestLock = Any()
-    @Volatile
-    private var codexSignedIn = false
     @Volatile
     private var settingsDisposed = false
     private var root: JComponent? = null
@@ -201,10 +171,6 @@ internal class CommitProvidersConfigurable(
         testConnectionButton.addActionListener {
             if (testRunning) cancelConnectionTest() else testConnection()
         }
-        codexRefreshButton.addActionListener { refreshCodexAccount() }
-        codexSignInButton.addActionListener { startCodexLogin(deviceCode = false) }
-        codexDeviceButton.addActionListener { startCodexLogin(deviceCode = true) }
-        codexLogoutButton.addActionListener { logoutCodexAccount() }
     }
 
     override fun getId(): String = ID
@@ -232,15 +198,15 @@ internal class CommitProvidersConfigurable(
 
         return panel {
             group(CommitMessageBundle.message("settings.providers.codex.group")) {
-                row(CommitMessageBundle.message("settings.providers.codex.executable")) {
-                    cell(codexExecutableField).align(Align.FILL).resizableColumn()
-                    cell(codexRefreshButton)
-                }
-                row(CommitMessageBundle.message("settings.providers.codex.account")) {
-                    cell(codexAccountStatus).align(Align.FILL).resizableColumn()
-                    cell(codexSignInButton)
-                    cell(codexDeviceButton)
-                    cell(codexLogoutButton)
+                row {
+                    cell(codexStatusLabel).align(Align.FILL).resizableColumn()
+                    button(CommitMessageBundle.message("settings.providers.codex.configure")) {
+                        ShowSettingsUtil.getInstance().showSettingsDialog(
+                            null,
+                            "emohce.settings.commitMessage.codex",
+                        )
+                        refreshCodexStatusLabel()
+                    }
                 }
             }
             row(CommitMessageBundle.message("settings.providers.active")) {
@@ -270,14 +236,12 @@ internal class CommitProvidersConfigurable(
 
     override fun isModified(): Boolean {
         return workingProviderFields() != loadedProviderFields ||
-            codexExecutableField.text.trim() != loadedCodexExecutable ||
             dirtyKeyIds.isNotEmpty() || clearedKeyIds.isNotEmpty() || removedProfileIds.isNotEmpty()
     }
 
     override fun apply() {
         val selectedProfileId = selectedProfile()?.id
         cancelConnectionTest(showCancelled = false)
-        cancelCodexRequest()
         commitDisplayedReasoning()
         val snapshot = profiles.map { it.copy() }.toMutableList()
         if (snapshot.any {
@@ -297,10 +261,6 @@ internal class CommitProvidersConfigurable(
         ) {
             throw ConfigurationException(CommitMessageBundle.message("settings.portable.concurrentChange"))
         }
-        val currentExecutable = codexGateway.executablePath()
-        if (currentExecutable != loadedCodexExecutable && currentExecutable != codexExecutableField.text.trim()) {
-            throw ConfigurationException(CommitMessageBundle.message("settings.providers.concurrentChange"))
-        }
         val merged = current.apply {
             profiles = snapshot
             activeProfileId = this@CommitProvidersConfigurable.activeProfileId
@@ -314,14 +274,10 @@ internal class CommitProvidersConfigurable(
             .mapNotNull { id -> sessionKeys[id]?.copyOf()?.let { id to it } }
             .toMap()
         val keyDeletes = (removedProfileIds + clearedKeyIds).distinct()
-        val requestedExecutable = codexExecutableField.text.trim()
         val failure = AtomicReference<Throwable?>()
         val completed = ProgressManager.getInstance().runProcessWithProgressSynchronously(
             Runnable {
-                var executableUpdated = false
                 try {
-                    codexGateway.setExecutablePath(requestedExecutable, currentExecutable)
-                    executableUpdated = requestedExecutable != currentExecutable
                     CommitMessageCredentialAccess.transaction {
                         val affected = (keyDeletes + keyWrites.keys).distinct()
                         val originals = affected.associateWith(secretStore::getCredentials)
@@ -339,11 +295,6 @@ internal class CommitProvidersConfigurable(
                         }
                     }
                 } catch (error: Throwable) {
-                    if (executableUpdated) {
-                        runCatching {
-                            codexGateway.setExecutablePath(currentExecutable, requestedExecutable)
-                        }.exceptionOrNull()?.let(error::addSuppressed)
-                    }
                     failure.set(error)
                 } finally {
                     keyWrites.values.forEach { it.fill('\u0000') }
@@ -363,8 +314,6 @@ internal class CommitProvidersConfigurable(
                 CommitMessageBundle.message("settings.providers.title"),
             )
         }
-        loadedCodexExecutable = codexGateway.executablePath()
-        codexExecutableField.text = loadedCodexExecutable
 
         dirtyKeyIds.clear()
         clearedKeyIds.clear()
@@ -374,30 +323,29 @@ internal class CommitProvidersConfigurable(
 
     override fun reset() {
         cancelConnectionTest(showCancelled = false)
-        cancelCodexRequest()
         clearSessionKeys()
         dirtyKeyIds.clear()
         clearedKeyIds.clear()
         removedProfileIds.clear()
         fetchedModels.clear()
-        loadedCodexExecutable = codexGateway.executablePath()
-        codexExecutableField.text = loadedCodexExecutable
-        codexAccountStatus.text = CommitMessageBundle.message("settings.providers.codex.notChecked")
-        codexSignedIn = false
-        setCodexButtons(running = false, signedIn = false)
+        refreshCodexStatusLabel()
         loadAppliedState(CommitMessageSettingsService.getInstance())
     }
 
     override fun disposeUIResources() {
         settingsDisposed = true
         cancelConnectionTest(showCancelled = false)
-        cancelCodexRequest()
         clearSessionKeys()
         dirtyKeyIds.clear()
         clearedKeyIds.clear()
         removedProfileIds.clear()
         fetchedModels.clear()
         root = null
+    }
+
+    private fun refreshCodexStatusLabel() {
+        val executable = CodexAppServerService.getInstance().executablePath()
+        codexStatusLabel.text = if (executable.isNotBlank()) executable else CodexAppServerService.getInstance().resolvedExecutablePath()
     }
 
     @TestOnly
@@ -868,156 +816,6 @@ internal class CommitProvidersConfigurable(
         },
     )
 
-    private fun refreshCodexAccount() {
-        runCodexRequest(CommitMessageBundle.message("settings.providers.codex.checking")) { service, indicator, generation ->
-            val installation = service.installationStatus()
-            if (!installation.available) {
-                onCodexEdt(generation) { showCodexInstallation(installation) }
-                return@runCodexRequest
-            }
-            val account = service.account(indicator)
-            onCodexEdt(generation) {
-                showCodexAccount(account.type == "chatgpt" && !account.requiresOpenAiAuth, account.email, account.planType)
-            }
-        }
-    }
-
-    private fun startCodexLogin(deviceCode: Boolean) {
-        runCodexRequest(CommitMessageBundle.message("settings.providers.codex.signingIn")) { service, indicator, generation ->
-            val installation = service.installationStatus()
-            if (!installation.available) {
-                onCodexEdt(generation) { showCodexInstallation(installation) }
-                return@runCodexRequest
-            }
-            val completed = if (deviceCode) {
-                service.deviceLogin(indicator) { login ->
-                    onCodexEdt(generation) {
-                        openCodexUrl(login.verificationUrl)
-                        showCodexDeviceCode(login.userCode)
-                    }
-                }
-            } else {
-                service.browserLogin(indicator) { login ->
-                    onCodexEdt(generation) { openCodexUrl(login.authUrl) }
-                }
-            }
-            if (!completed.success) {
-                throw CodexAppServerException(
-                    CodexAppServerErrorKind.REQUEST,
-                    completed.error.orEmpty().ifBlank {
-                        CommitMessageBundle.message("settings.providers.codex.signInFailed")
-                    },
-                )
-            }
-            val account = service.account(indicator)
-            onCodexEdt(generation) { showCodexAccount(true, account.email, account.planType) }
-        }
-    }
-
-    private fun logoutCodexAccount() {
-        if (!confirmCodexLogout()) return
-        runCodexRequest(
-            CommitMessageBundle.message("settings.providers.codex.loggingOut"),
-            requireAppliedExecutable = false,
-        ) { service, _, generation ->
-            service.logout()
-            onCodexEdt(generation) { showCodexAccount(false, null, null) }
-        }
-    }
-
-    private fun runCodexRequest(
-        status: String,
-        requireAppliedExecutable: Boolean = true,
-        operation: (CodexAccountSettingsGateway, ProgressIndicator, Long) -> Unit,
-    ) {
-        if (requireAppliedExecutable && codexExecutableField.text.trim() != codexGateway.executablePath()) {
-            codexAccountStatus.text = CommitMessageBundle.message("settings.providers.codex.applyExecutableFirst")
-            return
-        }
-        val handle = synchronized(codexRequestLock) {
-            if (currentCodexRequest.get() != null) return
-            CodexRequestHandle(codexRequestGeneration.incrementAndGet()).also(currentCodexRequest::set)
-        }
-        val generation = handle.generation
-        codexAccountStatus.text = status
-        setCodexButtons(running = true, signedIn = codexSignedIn)
-        requestRunner.run(status) { indicator ->
-            handle.indicator.set(indicator)
-            if (currentCodexRequest.get() !== handle || generation != codexRequestGeneration.get()) indicator.cancel()
-            try {
-                indicator.checkCanceled()
-                operation(codexGateway, indicator, generation)
-            } catch (_: ProcessCanceledException) {
-                onCodexEdt(generation) {
-                    codexAccountStatus.text = CommitMessageBundle.message("settings.providers.testCancelled")
-                }
-            } catch (error: Throwable) {
-                val safe = ProviderErrorSanitizer.sanitize(error.message).take(300)
-                onCodexEdt(generation) {
-                    codexAccountStatus.text = safe.ifBlank { CommitMessageBundle.message("settings.providers.requestFailed") }
-                }
-            } finally {
-                handle.indicator.compareAndSet(indicator, null)
-                currentCodexRequest.compareAndSet(handle, null)
-                onCodexEdt(generation) { setCodexButtons(running = false, signedIn = codexSignedIn) }
-            }
-        }
-    }
-
-    private fun cancelCodexRequest() {
-        val cancelled = synchronized(codexRequestLock) {
-            codexRequestGeneration.incrementAndGet()
-            currentCodexRequest.getAndSet(null)
-        }
-        cancelled?.indicator?.getAndSet(null)?.cancel()
-        if (!settingsDisposed) setCodexButtons(running = false, signedIn = codexSignedIn)
-    }
-
-    private fun onCodexEdt(generation: Long, action: () -> Unit) {
-        onEdt {
-            if (!settingsDisposed && generation == codexRequestGeneration.get()) action()
-        }
-    }
-
-    private fun showCodexInstallation(status: CodexInstallationStatus) {
-        codexSignedIn = false
-        codexAccountStatus.text = when (status.problem) {
-            CodexInstallationProblem.NOT_FOUND -> CommitMessageBundle.message("settings.providers.codex.error.notFound")
-            CodexInstallationProblem.VERSION_TIMEOUT -> CommitMessageBundle.message("settings.providers.codex.error.versionTimeout")
-            CodexInstallationProblem.VERSION_UNKNOWN -> CommitMessageBundle.message("settings.providers.codex.error.versionUnknown")
-            CodexInstallationProblem.VERSION_TOO_OLD -> CommitMessageBundle.message(
-                "settings.providers.codex.error.versionTooOld",
-                CodexAppServerService.MINIMUM_CODEX_VERSION,
-            )
-            CodexInstallationProblem.VERSION_CHECK_FAILED -> CommitMessageBundle.message(
-                "settings.providers.codex.error.versionCheckFailed",
-            )
-            null -> status.message
-        }
-        setCodexButtons(running = false, signedIn = false)
-    }
-
-    private fun showCodexAccount(signedIn: Boolean, email: String?, planType: String?) {
-        codexSignedIn = signedIn
-        codexAccountStatus.text = if (signedIn) {
-            CommitMessageBundle.message(
-                "settings.providers.codex.signedIn",
-                email.orEmpty().ifBlank { CommitMessageBundle.message("settings.providers.codex.accountUnknown") },
-                planType.orEmpty().ifBlank { CommitMessageBundle.message("settings.providers.codex.planUnknown") },
-            )
-        } else {
-            CommitMessageBundle.message("settings.providers.codex.signedOut")
-        }
-        setCodexButtons(running = false, signedIn = signedIn)
-    }
-
-    private fun setCodexButtons(running: Boolean, signedIn: Boolean) {
-        codexRefreshButton.isEnabled = !running
-        codexSignInButton.isEnabled = !running && !signedIn
-        codexDeviceButton.isEnabled = !running && !signedIn
-        codexLogoutButton.isEnabled = !running && signedIn
-    }
-
     private fun isSafeEndpoint(value: String): Boolean {
         val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return false
         return uri.scheme?.lowercase() in setOf("http", "https") &&
@@ -1086,10 +884,6 @@ internal class CommitProvidersConfigurable(
 
     private class ConnectionTestHandle {
         val cancelled = AtomicBoolean(false)
-        val indicator = AtomicReference<ProgressIndicator?>()
-    }
-
-    private class CodexRequestHandle(val generation: Long) {
         val indicator = AtomicReference<ProgressIndicator?>()
     }
 
